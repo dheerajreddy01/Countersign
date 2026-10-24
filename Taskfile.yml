@@ -73,6 +73,16 @@ tasks:
     desc: Validate docker-compose.yml
     cmds: [docker compose config --quiet]
 
+  sync:
+    desc: Merge the latest origin/main into the current branch
+    cmds:
+      - git fetch origin
+      - git merge origin/main
+
+  ruleset:apply:
+    desc: Create or update the GitHub ruleset for main (needs gh auth login)
+    cmds: [bash scripts/apply-ruleset.sh]
+
   ci:
     desc: What CI runs
     cmds:
