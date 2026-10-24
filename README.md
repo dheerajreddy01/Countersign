@@ -61,7 +61,7 @@ Every PayPal ruling is stored as an outcome event. The planned minimum is a simp
 fight if  P(win) × amount − cost_to_fight  >  refund_cost
 ```
 
-`cost_to_fight` defaults to an average internal labour estimate. The numbers behind each recommendation are always shown to the merchant.
+`cost_to_fight` defaults to an average internal labour estimate. `refund_cost` is what the merchant recovers by refunding instead of fighting, which is nothing — a refund returns the full amount to the buyer — so it defaults to 0, and the rule reduces to fighting when the expected amount recovered beats the cost to fight. The numbers behind each recommendation are always shown to the merchant.
 
 ## Grounding guard
 

@@ -73,7 +73,14 @@ class Decision:
 
 
 def decide(p_win: float, amount: float, cost_to_fight: float, refund_cost: float | None = None) -> Decision:
-    """Fight if P(win) x amount - cost_to_fight > refund_cost."""
-    refund = amount if refund_cost is None else refund_cost
+    """Fight if P(win) x amount - cost_to_fight > refund_cost.
+
+    refund_cost is what the merchant recovers by refunding rather than fighting,
+    which is nothing: a refund returns the full amount to the buyer. So it
+    defaults to 0, and fighting is worth it when the expected amount recovered
+    (P(win) x amount) exceeds the cost of fighting. Passing refund_cost=amount
+    would make fighting impossible, since P(win) <= 1.
+    """
+    refund = 0.0 if refund_cost is None else refund_cost
     ev_fight = p_win * amount - cost_to_fight
     return Decision("fight" if ev_fight > refund else "refund", ev_fight, refund)

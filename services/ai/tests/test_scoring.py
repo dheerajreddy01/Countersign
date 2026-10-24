@@ -25,3 +25,16 @@ def test_decide_fights_when_expected_value_beats_refund():
 def test_decide_refunds_when_odds_are_poor():
     d = decide(p_win=0.1, amount=100, cost_to_fight=25, refund_cost=50)
     assert d.recommendation == "refund"
+
+
+def test_decide_default_refund_cost_is_zero_so_strong_cases_fight():
+    # With the default (refunding recovers nothing), a strong case fights when
+    # the expected recovery beats the cost to fight.
+    d = decide(p_win=0.8, amount=100, cost_to_fight=25)
+    assert d.refund_cost == 0.0
+    assert d.recommendation == "fight"  # 0.8 * 100 - 25 = 55 > 0
+
+
+def test_decide_default_refunds_when_expected_recovery_below_cost():
+    d = decide(p_win=0.1, amount=100, cost_to_fight=25)
+    assert d.recommendation == "refund"  # 0.1 * 100 - 25 = -15 <= 0
