@@ -1,21 +1,30 @@
 // A TypeScript mirror of services/ai/app/scoring.py so the console can score a
-// case when the Python AI service is not running. The coefficients are the same
-// PLACEHOLDER values as the backend: they keep the pipeline end to end and are
-// not fitted to data. POST /api/score proxies to AI_SERVICE_URL when it is set.
+// case when the Python AI service is not running. The coefficients are derived
+// from published representment win-rate estimates (see the backend's module
+// docstring and the README for the citation list), not fitted to data. Each
+// coefficient is the change in log-odds implied by a published win-rate move.
+// POST /api/score proxies to AI_SERVICE_URL when it is set.
 
 import type { Decision, DisputeReason, Factor, Recommendation } from "./types";
 
-const INTERCEPT = 0.0;
+// logit(0.18): a contested dispute with no favourable evidence, reference-sized
+// order, no fraud signal.
+const INTERCEPT = -1.52;
+
+// amount_log is centred on a reference order value so the intercept keeps its
+// "bare dispute" meaning.
+const AMOUNT_REFERENCE = 100.0;
+const AMOUNT_LOG_REFERENCE = Math.log1p(AMOUNT_REFERENCE);
 
 const COEFFICIENTS: Record<string, number> = {
-  delivery_confirmed: 1.2,
-  signature_captured: 0.8,
-  mandate_matching: 1.5,
-  prior_customer_contact: 0.3,
-  buyer_dispute_history: -0.6,
-  amount_log: -0.1,
-  days_to_deadline: 0.02,
-  fraud_likelihood: -2.0,
+  delivery_confirmed: 1.5, // delivery-confirmed INR defence ~= 50%
+  signature_captured: 0.8, // strongest evidence; delivery+signature ~= 67%
+  mandate_matching: 2.0, // compelling proof of authorisation
+  prior_customer_contact: 0.35, // weak prior, not a published figure
+  buyer_dispute_history: -0.25, // weak prior, per repeat disputer
+  amount_log: -0.15, // higher-value orders win less often (centred)
+  days_to_deadline: 0.02, // weak operational prior, no published basis
+  fraud_likelihood: -2.6, // true-fraud win rate < 9%
 };
 
 const FACTOR_LABELS: Record<string, string> = {
@@ -64,7 +73,7 @@ export function scoreDecision(input: ScoreInput): Decision {
     mandate_matching: input.mandateMatching ? 1 : 0,
     prior_customer_contact: input.priorCustomerContact ? 1 : 0,
     buyer_dispute_history: input.buyerDisputeHistory,
-    amount_log: Math.log1p(Math.max(input.amount, 0)),
+    amount_log: Math.log1p(Math.max(input.amount, 0)) - AMOUNT_LOG_REFERENCE,
     days_to_deadline: input.daysToDeadline,
   };
   if (fraud != null) values.fraud_likelihood = fraud;
@@ -101,6 +110,6 @@ export function scoreDecision(input: ScoreInput): Decision {
     recommendation,
     factors,
     fraudLikelihood: fraud,
-    modelVersions: fraud != null ? { scoring: "v1-placeholder" } : {},
+    modelVersions: fraud != null ? { scoring: "v1-estimates" } : {},
   };
 }

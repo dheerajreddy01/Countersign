@@ -17,6 +17,46 @@ def test_returns_at_most_three_factors():
     assert len(score(Features(amount=50)).top_factors) <= 3
 
 
+# Calibration against the published anchors documented in app/scoring.py. The
+# reference amount is $100, where the amount term is zero.
+
+def test_bare_dispute_sits_below_the_contested_average():
+    # No favourable evidence -> well below the ~45-54% blended contested rate.
+    p = score(Features(amount=100)).p_win
+    assert 0.15 < p < 0.22
+
+
+def test_delivery_confirmation_lands_near_fifty_percent():
+    p = score(Features(amount=100, delivery_confirmed=True)).p_win
+    assert 0.45 < p < 0.55
+
+
+def test_delivery_plus_signature_reaches_two_thirds():
+    p = score(
+        Features(amount=100, delivery_confirmed=True, signature_captured=True)
+    ).p_win
+    assert 0.63 < p < 0.72
+
+
+def test_true_fraud_with_no_evidence_is_below_nine_percent():
+    p = score(Features(amount=100, fraud_likelihood=1.0)).p_win
+    assert p < 0.09
+
+
+def test_matching_mandate_rescues_an_unauthorized_case():
+    # A signed mandate is the compelling counter to an "unauthorized" claim.
+    p = score(
+        Features(
+            amount=100,
+            mandate_matching=True,
+            delivery_confirmed=True,
+            prior_customer_contact=True,
+            fraud_likelihood=0.1,
+        )
+    ).p_win
+    assert p > 0.7
+
+
 def test_decide_fights_when_expected_value_beats_refund():
     d = decide(p_win=0.95, amount=100, cost_to_fight=5, refund_cost=50)
     assert d.recommendation == "fight"

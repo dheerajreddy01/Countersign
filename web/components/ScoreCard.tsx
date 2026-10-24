@@ -12,7 +12,7 @@ export function ScoreCard({ decision }: { decision: Decision }) {
     <Card>
       <CardHeader
         title="Score"
-        subtitle="Logistic regression v1 · placeholder coefficients"
+        subtitle="Logistic regression v1 · coefficients from published win-rate estimates"
         action={
           Object.keys(decision.modelVersions).length > 0 ? (
             <Badge tone="neutral">

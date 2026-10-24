@@ -40,7 +40,19 @@ Logistic regression that returns `P(win)` for a dispute.
 | Buyer dispute history | |
 | Days to deadline | |
 
-Coefficients start from published industry estimates rather than being fitted to this project's own data. Every score returns its top contributing factors, so the merchant sees why, and which missing proof would help most.
+Coefficients are derived from published representment win-rate estimates rather than being fitted to this project's own data. Each coefficient is the change in log-odds implied by moving between two published win rates; the full derivation is in the `scoring.py` module docstring. Every score returns its top contributing factors, so the merchant sees why, and which missing proof would help most.
+
+**Anchors used**
+
+| Signal | Published figure | Source |
+|---|---|---|
+| Baseline contested win rate | ~54% (US), ~44.6% contested / 8.1% outright | Mastercard · Datos Insights (2025); [Chargebacks911 Field Report (2026)](https://chargebacks911.com/chargeback-management/chargeback-win-rate/) |
+| True fraud / "unauthorized" | merchants win < 9% | [Chargebacks911](https://chargebacks911.com/chargeback-management/chargeback-win-rate/); [chargeback.io](https://www.chargeback.io/blog/how-often-do-merchants-win-chargeback-disputes) |
+| Delivery confirmation (INR) | ~45–60% with delivered tracking | vendor estimates (unverified against a primary dataset) |
+| Signature confirmation | strongest evidence type; PayPal requires it ≥ $750 | [Chargeflow](https://www.chargeflow.io/knowledge-base-articles/what-proof-does-paypal-accept-for-an-item-not-received) |
+| By vertical / amount | ~17% electronics → ~41% digital goods | Midigator / LexisNexis (2024) |
+
+`prior_customer_contact`, `buyer_dispute_history` and `days_to_deadline` have no published win-rate figure behind them; they are kept as small, reasonable-direction priors and are labelled as such in the code.
 
 ### Optional: fraud-likelihood score
 
