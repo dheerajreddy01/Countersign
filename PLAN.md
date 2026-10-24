@@ -1,55 +1,101 @@
-# Dispute Defender — Plan
+# Countersign: build plan
 
-A chargeback agent for small merchants.
+Deadline: **Nov 12, 2026, 12:00 PM PST** (19 days from Oct 24). Solo builder, so the plan favors one polished end-to-end path over breadth.
 
-## The problem
+## Submission checklist (from the rules)
 
-- A chargeback costs a merchant about **$128** on average.
-- Merchants win **54%** of the disputes they fight, but only fight **8%** of all disputes. Most are never contested.
+- [ ] Working demo: hosted URL **or** a public repo with complete run instructions and test credentials
+- [ ] Public repo (GitHub/GitLab/Bitbucket) with an open-source license visible in the About section
+- [ ] Demo video under 3 minutes, public on YouTube, no third-party trademarks or copyrighted music
+- [ ] Text description of features
+- [ ] List of AI tools used and how
+- [ ] Must stay free to test until Dec 15, 2026
+- [ ] If reusing prior work: explain what was significantly updated (this is a new project)
 
-## How it works
+The repo must be public.
 
-1. **Trigger.** A webhook fires when a dispute is opened.
-2. **Triage.** The agent works out the dispute reason and gathers the order, tracking, invoice and customer messages.
-3. **Decide.** It compares fighting against offering a refund:
-   `expected value of fighting = P(win) × amount − cost of fighting`
-   and recommends fight, offer or accept.
-4. **Draft.** It writes the evidence package for the chosen path.
-5. **Act (after merchant approval).** It submits the evidence, makes an offer, or accepts the claim.
+## Scope
 
-The merchant approves before anything is sent to PayPal.
+**Must have (the demo path)**
+1. Webhook ingest with signature verification and dedupe
+2. Mandate creation, signing and storage for agent orders
+3. Evidence builder for two cases: "item not received" and "unauthorized"
+4. Case agent: classification, expected-value decision, draft, grounding guard
+5. Merchant console with approve and the deadline board
+6. Action executor: send message, provide evidence, make offer, accept claim
+7. Sandbox adjudication and outcome stored
 
-## Sandbox support
+**Should have**: inquiry-stage early settlement, Channel3 product lookup in the demo agent, deploy on Render.
 
-PayPal's sandbox can simulate every stage: creating disputes and chargebacks, inquiries, offers, evidence, PayPal's ruling and appeals. The demo runs against real APIs, with no mocks.
+**Cut if behind**: appeals, analytics, ML retraining job (keep the outcome events and a simple update), multi-merchant support.
 
-## Sponsor pairing: Bryntum
+## Services and data
 
-Bryntum's prize page suggests a **dispute triage board**: a Scheduler view of evidence deadlines per support agent. Building it is a direct hit for their prize.
+**Kafka (Redpanda) topics**
 
-## Prize targets
+| Topic | Producer | Consumer | Key |
+|---|---|---|---|
+| `pp.webhooks.raw` | gateway | normalizer | event id |
+| `cs.dispute.events` | normalizer | case service | dispute id |
+| `cs.evidence.requested` | case service | evidence builder | dispute id |
+| `cs.case.ready` | evidence builder | AI service | dispute id |
+| `cs.decision.pending` | AI service | console API | dispute id |
+| `cs.action.requested` | console API | executor | dispute id |
+| `cs.outcomes` | executor | scoring updater | dispute id |
+| `cs.dlq` | any | ops | n/a |
 
-- Most Impactful
-- Top placings
-- Bryntum ($1K)
+**Postgres tables (core)**: `cases`, `evidence_records` (id, case_id, type, source, payload, hash), `mandates` (id, order_id, signed_payload, prev_hash, signature), `decisions` (case_id, factors, ev, recommendation), `drafts` (case_id, text, citations), `actions` (idempotency_key, status), `outcomes`, `audit_log`.
 
-## Milestones
+**Scoring model v1**: logistic regression with these inputs: dispute reason, delivery confirmed, signature captured, mandate present and matching, amount, prior customer contact, buyer dispute history, days to deadline. Coefficients start from published industry estimates; every score returns its top contributing factors. Optional: a gradient-boosted fraud-likelihood score trained on a public fraud dataset (IEEE-CIS) as an extra input for "unauthorized" cases, reported with honest validation metrics.
 
-Proposed from the brief; adjust as needed.
+**Decision rule**: fight if `P(win) x amount - cost_to_fight > refund_cost`, with cost to fight defaulting to the average internal labor estimate. Always shown to the merchant.
 
-| # | Milestone | Done when |
-|---|-----------|-----------|
-| 1 | Webhook receiver | A sandbox dispute-opened event reaches the agent |
-| 2 | Context gathering | Reason, order, tracking, invoice and messages are collected for a dispute |
-| 3 | Fight-vs-refund maths | Agent outputs a recommendation with its numbers shown |
-| 4 | Evidence drafting | A draft evidence package is produced per dispute reason |
-| 5 | Approval flow | Merchant approves, then evidence, offer or accept is sent to the sandbox |
-| 6 | Triage board | Bryntum Scheduler shows evidence deadlines per support agent |
-| 7 | End-to-end demo | One dispute runs through to PayPal's ruling, with an appeal |
+## Day-by-day schedule
 
-## Open questions
+| Dates | Focus | Done when |
+|---|---|---|
+| Oct 24-25 | PayPal sandbox accounts, app credentials, webhook tunnel, repo + license, Docker Compose with Postgres and Redpanda | Sandbox dispute arrives as a verified webhook in the log |
+| Oct 26-28 | Go gateway: signature verification, dedupe, topics, case service; PayPal client with OAuth and idempotency | Dispute becomes a `cases` row |
+| Oct 29-30 | Demo agent + mandate ledger; order, capture, tracking recorded | Agent order has a signed mandate linked to it |
+| Oct 31-Nov 2 | Evidence builder; Python AI service: classifier, scoring, EV, draft, grounding guard | Both demo cases produce a cited draft |
+| Nov 3-5 | Action executor against the Disputes API; sandbox adjudication; outcome stored | Evidence submitted and ruling recorded in sandbox |
+| Nov 6-8 | Next.js console + Bryntum Scheduler board; approve/edit flow | Full demo path runs from the UI |
+| Nov 9 | Hardening: retries, DLQ, error states; deploy to Render (or finalize run instructions) | Fresh-clone run works |
+| Nov 10 | Write submission text; record and edit video | Video uploaded as public |
+| Nov 11 | Buffer, README polish, final check of the checklist | Everything submitted |
+| Nov 12 (morning) | **Submit before noon PST** | Submitted early, not at the deadline |
 
-- Source of win-probability by dispute reason (the 54% is an overall figure).
-- Where order, tracking and invoice data comes from in the demo (a sandbox store or seeded data).
-- Cost-of-fighting assumptions (time, fees).
-- Stack choices (not specified yet).
+## Sponsor tie-ins (pick few)
+
+- **Bryntum**: the Scheduler dispute deadline board, which their prize page suggests.
+- **Channel3**: product lookup in the demo agent (use promo code from their page).
+- **Render**: hosting; credits available.
+- **APIMatic**: use its context plugin while coding the PayPal client (optional, low effort).
+
+A project can win one grand prize plus one sponsor prize, so there is no need to chase more than two sponsors.
+
+## Risks and mitigations
+
+| Risk | Mitigation |
+|---|---|
+| Sandbox dispute creation needs buyer-side tokens and the `PayPal-Auth-Assertion` header | Spend day 1 on a script that creates a dispute; keep it in `scripts/` |
+| Some sandbox accounts hit errors (see event forum) | Create fresh Business and Personal accounts; ask in the PayPal Discord early |
+| Judges say "Chargeflow already does this" | Lead with the inquiry-stage and mandate-evidence story in the video and README |
+| "AI invented evidence" concern | Demonstrate the grounding guard rejecting a made-up sentence |
+| Time overrun | Cut list above; protect the demo path and the video |
+| Overclaiming accuracy | State limitations in README; label synthetic outcomes |
+
+## Demo video outline (under 3 minutes)
+
+1. **0:00-0:25** Problem: $128 per chargeback, most never fought; now agents buy on users' behalf.
+2. **0:25-0:55** Agent buys shoes; mandate signed; show the proof record.
+3. **0:55-1:30** Buyer disputes; webhook; case appears with evidence and score reasoning.
+4. **1:30-2:00** Grounding guard rejects an uncited sentence; draft passes.
+5. **2:00-2:30** Merchant approves; evidence submitted; sandbox ruling in the merchant's favor.
+6. **2:30-3:00** Early-settlement example, what is real vs simulated, and what's next.
+
+## First three actions today
+
+1. Create the PayPal developer account and the sandbox app and accounts.
+2. Create the public GitHub repo with an MIT license and this README.
+3. Set up the webhook tunnel and Docker Compose with Postgres and Redpanda.
