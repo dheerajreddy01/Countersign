@@ -28,9 +28,12 @@ Anchors (see README "The machine learning model" for the full citation list):
     to ~41% digital goods. Higher-value orders win less often, so amount_log
     carries a small negative coefficient.
 
-Weak priors (kept small and labelled; NOT from a published win-rate figure):
-  prior_customer_contact, buyer_dispute_history, days_to_deadline. These are
-  reasonable-direction starting values, not measurements.
+Excluded from v1's probability: prior_customer_contact, buyer_dispute_history
+and days_to_deadline have no published win-rate figure behind them, so they do
+NOT move P(win) in v1. They are still accepted as inputs and recorded on the
+case (shown in the console), and can be given coefficients once there is data
+to fit them. Keeping an unsourced factor out of the score is more honest than
+dressing up a guessed coefficient as a measurement.
 
 Every score still returns its top contributing factors, and the README states
 these are estimates from published figures, not measurements of a real
@@ -52,15 +55,13 @@ AMOUNT_REFERENCE = 100.0
 AMOUNT_LOG_REFERENCE = math.log1p(AMOUNT_REFERENCE)
 
 # feature -> coefficient (change in log-odds). See the module docstring for the
-# published anchor behind each value.
+# published anchor behind each value. Only signals with a published win-rate
+# basis appear here; the unsourced inputs are excluded from the probability.
 COEFFICIENTS: dict[str, float] = {
     "delivery_confirmed": 1.5,  # delivery-confirmed INR defence ~= 50%
     "signature_captured": 0.8,  # strongest evidence; delivery+signature ~= 67%
     "mandate_matching": 2.0,  # compelling proof of authorisation
-    "prior_customer_contact": 0.35,  # weak prior, not a published figure
-    "buyer_dispute_history": -0.25,  # weak prior, per repeat disputer
     "amount_log": -0.15,  # higher-value orders win less often (centred)
-    "days_to_deadline": 0.02,  # weak operational prior, no published basis
     # Only applied when a fraud model supplied a value ("unauthorized" cases).
     "fraud_likelihood": -2.6,  # true-fraud win rate < 9%
 }
@@ -71,9 +72,11 @@ class Features:
     delivery_confirmed: bool = False
     signature_captured: bool = False
     mandate_matching: bool = False
+    amount: float = 0.0
+    # Accepted and recorded on the case, but NOT used in v1's probability: no
+    # published win-rate basis (see the module docstring).
     prior_customer_contact: bool = False
     buyer_dispute_history: int = 0
-    amount: float = 0.0
     days_to_deadline: float = 0.0
     # 0..1 from the fraud model; None means no fraud signal, which is neutral.
     fraud_likelihood: float | None = None
@@ -90,10 +93,7 @@ def score(f: Features) -> Score:
         "delivery_confirmed": float(f.delivery_confirmed),
         "signature_captured": float(f.signature_captured),
         "mandate_matching": float(f.mandate_matching),
-        "prior_customer_contact": float(f.prior_customer_contact),
-        "buyer_dispute_history": float(f.buyer_dispute_history),
         "amount_log": math.log1p(max(f.amount, 0.0)) - AMOUNT_LOG_REFERENCE,
-        "days_to_deadline": f.days_to_deadline,
     }
     if f.fraud_likelihood is not None:
         values["fraud_likelihood"] = f.fraud_likelihood

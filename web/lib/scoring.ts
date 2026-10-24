@@ -16,14 +16,14 @@ const INTERCEPT = -1.52;
 const AMOUNT_REFERENCE = 100.0;
 const AMOUNT_LOG_REFERENCE = Math.log1p(AMOUNT_REFERENCE);
 
+// Only signals with a published win-rate basis move the probability. The
+// unsourced inputs (prior_customer_contact, buyer_dispute_history,
+// days_to_deadline) are accepted and recorded but excluded from v1's score.
 const COEFFICIENTS: Record<string, number> = {
   delivery_confirmed: 1.5, // delivery-confirmed INR defence ~= 50%
   signature_captured: 0.8, // strongest evidence; delivery+signature ~= 67%
   mandate_matching: 2.0, // compelling proof of authorisation
-  prior_customer_contact: 0.35, // weak prior, not a published figure
-  buyer_dispute_history: -0.25, // weak prior, per repeat disputer
   amount_log: -0.15, // higher-value orders win less often (centred)
-  days_to_deadline: 0.02, // weak operational prior, no published basis
   fraud_likelihood: -2.6, // true-fraud win rate < 9%
 };
 
@@ -71,10 +71,7 @@ export function scoreDecision(input: ScoreInput): Decision {
     delivery_confirmed: input.deliveryConfirmed ? 1 : 0,
     signature_captured: input.signatureCaptured ? 1 : 0,
     mandate_matching: input.mandateMatching ? 1 : 0,
-    prior_customer_contact: input.priorCustomerContact ? 1 : 0,
-    buyer_dispute_history: input.buyerDisputeHistory,
     amount_log: Math.log1p(Math.max(input.amount, 0)) - AMOUNT_LOG_REFERENCE,
-    days_to_deadline: input.daysToDeadline,
   };
   if (fraud != null) values.fraud_likelihood = fraud;
 

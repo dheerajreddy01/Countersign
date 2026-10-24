@@ -35,10 +35,10 @@ Logistic regression that returns `P(win)` for a dispute.
 | Delivery confirmed | from tracking |
 | Signature captured | |
 | Mandate present and matching | the agent-order proof |
-| Amount | |
-| Prior customer contact | |
-| Buyer dispute history | |
-| Days to deadline | |
+| Amount | centred on a $100 reference order |
+| Prior customer contact | recorded, not scored in v1 (no published basis) |
+| Buyer dispute history | recorded, not scored in v1 (no published basis) |
+| Days to deadline | recorded, not scored in v1 (no published basis) |
 
 Coefficients are derived from published representment win-rate estimates rather than being fitted to this project's own data. Each coefficient is the change in log-odds implied by moving between two published win rates; the full derivation is in the `scoring.py` module docstring. Every score returns its top contributing factors, so the merchant sees why, and which missing proof would help most.
 
@@ -52,7 +52,7 @@ Coefficients are derived from published representment win-rate estimates rather 
 | Signature confirmation | strongest evidence type; PayPal requires it ≥ $750 | [Chargeflow](https://www.chargeflow.io/knowledge-base-articles/what-proof-does-paypal-accept-for-an-item-not-received) |
 | By vertical / amount | ~17% electronics → ~41% digital goods | Midigator / LexisNexis (2024) |
 
-`prior_customer_contact`, `buyer_dispute_history` and `days_to_deadline` have no published win-rate figure behind them; they are kept as small, reasonable-direction priors and are labelled as such in the code.
+`prior_customer_contact`, `buyer_dispute_history` and `days_to_deadline` have no published win-rate figure behind them, so they are **excluded from v1's probability**. They are still accepted as inputs and recorded on the case (and shown in the console), and can be given coefficients once there is data to fit them. Keeping an unsourced factor out of the score is more honest than presenting a guessed coefficient as a measurement.
 
 ### Optional: fraud-likelihood score
 

@@ -43,6 +43,22 @@ def test_true_fraud_with_no_evidence_is_below_nine_percent():
     assert p < 0.09
 
 
+def test_unsourced_inputs_do_not_change_the_score():
+    # prior_customer_contact, buyer_dispute_history and days_to_deadline have no
+    # published basis, so they must not move P(win) in v1.
+    base = score(Features(amount=100, delivery_confirmed=True)).p_win
+    maxed = score(
+        Features(
+            amount=100,
+            delivery_confirmed=True,
+            prior_customer_contact=True,
+            buyer_dispute_history=9,
+            days_to_deadline=30,
+        )
+    ).p_win
+    assert maxed == base
+
+
 def test_matching_mandate_rescues_an_unauthorized_case():
     # A signed mandate is the compelling counter to an "unauthorized" claim.
     p = score(
