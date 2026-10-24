@@ -1,0 +1,80 @@
+# https://taskfile.dev — run `task --list` to see everything.
+version: "3"
+
+dotenv: [".env"]
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  setup:
+    desc: Create .env from the example if it does not exist
+    cmds:
+      - cmd: test -f .env || cp .env.example .env
+        platforms: [linux, darwin]
+      - cmd: if not exist .env copy .env.example .env
+        platforms: [windows]
+
+  up:
+    desc: Start Postgres, Redpanda, topics, gateway and AI service
+    deps: [setup]
+    cmds: [docker compose up --build -d]
+
+  down:
+    desc: Stop the stack (keeps volumes)
+    cmds: [docker compose down]
+
+  reset:
+    desc: Stop the stack and delete volumes (wipes the database)
+    cmds: [docker compose down -v]
+
+  logs:
+    desc: Follow logs, e.g. `task logs -- gateway`
+    cmds: ["docker compose logs -f {{.CLI_ARGS}}"]
+
+  topics:
+    desc: List Kafka topics
+    cmds: [docker compose exec redpanda rpk topic list]
+
+  psql:
+    desc: Open a psql shell in the Postgres container
+    cmds: ["docker compose exec postgres psql -U ${POSTGRES_USER:-countersign} ${POSTGRES_DB:-countersign}"]
+
+  test:
+    desc: Run all tests
+    cmds:
+      - task: test:gateway
+      - task: test:ai
+
+  test:gateway:
+    desc: Go tests for the gateway
+    dir: services/gateway
+    cmds: [go test ./...]
+
+  test:ai:
+    desc: Python tests for the AI service
+    dir: services/ai
+    cmds: [python -m pytest]
+
+  lint:
+    desc: Static checks
+    cmds:
+      - task: lint:gateway
+      - task: compose:check
+
+  lint:gateway:
+    dir: services/gateway
+    cmds:
+      - go vet ./...
+      - 'test -z "$(gofmt -l .)"'
+
+  compose:check:
+    desc: Validate docker-compose.yml
+    cmds: [docker compose config --quiet]
+
+  ci:
+    desc: What CI runs
+    cmds:
+      - task: lint
+      - task: test

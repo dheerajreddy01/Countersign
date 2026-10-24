@@ -82,7 +82,16 @@ Next.js console with an approve/edit flow and a Bryntum Scheduler board of dispu
 
 ## Getting started
 
-Run instructions will be added once the first services exist (see the schedule in PLAN.md). The aim is a fresh clone that runs with Docker Compose, using PayPal sandbox credentials supplied in `.env`.
+Needs Docker and [Task](https://taskfile.dev). Fill in the PayPal sandbox values in `.env` after the first step.
+
+```bash
+task setup    # creates .env from .env.example
+task up       # Postgres, Redpanda, topics, gateway (:8080), AI service (:8000)
+task test     # Go and Python tests (needs Go 1.22 and Python 3.12 locally)
+task --list   # everything else
+```
+
+The webhook endpoint rejects every request until PayPal signature verification is implemented. For local testing only, set `GATEWAY_SKIP_SIGNATURE_VERIFY=true`. Branching and CI: [docs/branching.md](docs/branching.md).
 
 ## Planned stack
 

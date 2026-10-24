@@ -1,0 +1,21 @@
+.env
+*.log
+.DS_Store
+
+# Go
+/bin/
+*.test
+*.out
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+
+# Local data
+/tmp/
