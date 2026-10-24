@@ -7,6 +7,12 @@ def test_mandate_and_delivery_raise_probability():
     assert proven > base
 
 
+def test_fraud_likelihood_lowers_probability_and_none_is_neutral():
+    none = score(Features(amount=100)).p_win
+    assert score(Features(amount=100, fraud_likelihood=None)).p_win == none
+    assert score(Features(amount=100, fraud_likelihood=0.9)).p_win < none
+
+
 def test_returns_at_most_three_factors():
     assert len(score(Features(amount=50)).top_factors) <= 3
 
