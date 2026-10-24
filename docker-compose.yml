@@ -67,5 +67,17 @@ services:
     ports:
       - "8000:8000"
 
+  web:
+    build: ./web
+    environment:
+      # Proxy the score endpoint to the AI service on the compose network.
+      AI_SERVICE_URL: http://ai:8000
+      # Unset: the console serves its built-in demo fixtures.
+      CONSOLE_API_URL: ""
+    depends_on:
+      - ai
+    ports:
+      - "3000:3000"
+
 volumes:
   pgdata:
