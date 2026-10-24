@@ -55,6 +55,30 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
 
+  web-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the console image
+        run: docker build -t countersign-web ./web
+      - name: Run the container
+        run: docker run -d --name web -p 3000:3000 countersign-web
+      - name: Smoke-test the running container
+        run: |
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:3000/ >/dev/null && break
+            sleep 2
+          done
+          curl -fsS http://localhost:3000/ >/dev/null
+          curl -fsS http://localhost:3000/api/cases >/dev/null
+          curl -fsS http://localhost:3000/cases/1001 | grep -q "Fight the dispute"
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs web || true
+      - name: Teardown
+        if: always()
+        run: docker rm -f web || true
+
   compose:
     runs-on: ubuntu-latest
     steps:
