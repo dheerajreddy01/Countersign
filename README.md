@@ -35,12 +35,24 @@ Logistic regression that returns `P(win)` for a dispute.
 | Delivery confirmed | from tracking |
 | Signature captured | |
 | Mandate present and matching | the agent-order proof |
-| Amount | |
-| Prior customer contact | |
-| Buyer dispute history | |
-| Days to deadline | |
+| Amount | centred on a $100 reference order |
+| Prior customer contact | recorded, not scored in v1 (no published basis) |
+| Buyer dispute history | recorded, not scored in v1 (no published basis) |
+| Days to deadline | recorded, not scored in v1 (no published basis) |
 
-Coefficients start from published industry estimates rather than being fitted to this project's own data. Every score returns its top contributing factors, so the merchant sees why, and which missing proof would help most.
+Coefficients are derived from published representment win-rate estimates rather than being fitted to this project's own data. Each coefficient is the change in log-odds implied by moving between two published win rates; the full derivation is in the `scoring.py` module docstring. Every score returns its top contributing factors, so the merchant sees why, and which missing proof would help most.
+
+**Anchors used**
+
+| Signal | Published figure | Source |
+|---|---|---|
+| Baseline contested win rate | ~54% (US), ~44.6% contested / 8.1% outright | Mastercard · Datos Insights (2025); [Chargebacks911 Field Report (2026)](https://chargebacks911.com/chargeback-management/chargeback-win-rate/) |
+| True fraud / "unauthorized" | merchants win < 9% | [Chargebacks911](https://chargebacks911.com/chargeback-management/chargeback-win-rate/); [chargeback.io](https://www.chargeback.io/blog/how-often-do-merchants-win-chargeback-disputes) |
+| Delivery confirmation (INR) | ~45–60% with delivered tracking | vendor estimates (unverified against a primary dataset) |
+| Signature confirmation | strongest evidence type; PayPal requires it ≥ $750 | [Chargeflow](https://www.chargeflow.io/knowledge-base-articles/what-proof-does-paypal-accept-for-an-item-not-received) |
+| By vertical / amount | ~17% electronics → ~41% digital goods | Midigator / LexisNexis (2024) |
+
+`prior_customer_contact`, `buyer_dispute_history` and `days_to_deadline` have no published win-rate figure behind them, so they are **excluded from v1's probability**. They are still accepted as inputs and recorded on the case (and shown in the console), and can be given coefficients once there is data to fit them. Keeping an unsourced factor out of the score is more honest than presenting a guessed coefficient as a measurement.
 
 ### Optional: fraud-likelihood score
 
@@ -61,7 +73,7 @@ Every PayPal ruling is stored as an outcome event. The planned minimum is a simp
 fight if  P(win) × amount − cost_to_fight  >  refund_cost
 ```
 
-`cost_to_fight` defaults to an average internal labour estimate. The numbers behind each recommendation are always shown to the merchant.
+`cost_to_fight` defaults to an average internal labour estimate. `refund_cost` is what the merchant recovers by refunding instead of fighting, which is nothing — a refund returns the full amount to the buyer — so it defaults to 0, and the rule reduces to fighting when the expected amount recovered beats the cost to fight. The numbers behind each recommendation are always shown to the merchant.
 
 ## Grounding guard
 

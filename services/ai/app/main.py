@@ -3,6 +3,9 @@ import os
 from fastapi import Depends, FastAPI
 from pydantic import BaseModel, Field
 
+from .classify import classify
+from .draft import Evidence, draft_response
+from .grounding import check_grounding
 from .registry import ModelRegistry, get_registry
 from .scoring import Features, decide, score
 
@@ -41,6 +44,86 @@ class ScoreResponse(BaseModel):
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+# --- Dispute defence pipeline: classify, draft, grounding guard ---------------
+
+
+class ClassifyRequest(BaseModel):
+    reason: str | None = None
+
+
+class ClassifyResponse(BaseModel):
+    category: str
+    supported: bool
+    normalized_from: str
+
+
+@app.post("/classify", response_model=ClassifyResponse)
+def classify_reason(req: ClassifyRequest) -> ClassifyResponse:
+    c = classify(req.reason)
+    return ClassifyResponse(
+        category=c.category, supported=c.supported, normalized_from=c.normalized_from
+    )
+
+
+class EvidenceIn(BaseModel):
+    id: str
+    type: str
+    summary: str = ""
+
+
+class DraftRequest(BaseModel):
+    reason: str
+    evidence: list[EvidenceIn] = []
+
+
+class DraftResponse(BaseModel):
+    category: str
+    text: str
+    citations: list[str]
+    grounding_passed: bool
+    uncited_sentences: list[str]
+    claims_count: int
+
+
+@app.post("/draft", response_model=DraftResponse)
+def draft_dispute(req: DraftRequest) -> DraftResponse:
+    d = draft_response(
+        req.reason, [Evidence(id=e.id, type=e.type, summary=e.summary) for e in req.evidence]
+    )
+    return DraftResponse(
+        category=classify(req.reason).category,
+        text=d.text,
+        citations=d.citations,
+        grounding_passed=d.grounding_passed,
+        uncited_sentences=d.uncited_sentences,
+        claims_count=d.claims_count,
+    )
+
+
+class GroundRequest(BaseModel):
+    text: str
+    evidence_ids: list[str] = []
+
+
+class GroundResponse(BaseModel):
+    passed: bool
+    uncited_sentences: list[str]
+    citations: list[str]
+    unknown_markers: list[str]
+
+
+@app.post("/ground", response_model=GroundResponse)
+def ground_text(req: GroundRequest) -> GroundResponse:
+    """Authoritative grounding check, e.g. for a merchant-edited draft."""
+    r = check_grounding(req.text, req.evidence_ids)
+    return GroundResponse(
+        passed=r.passed,
+        uncited_sentences=r.uncited_sentences,
+        citations=r.citations,
+        unknown_markers=r.unknown_markers,
+    )
 
 
 @app.post("/score", response_model=ScoreResponse)
