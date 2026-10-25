@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Card, CardBody, CardHeader } from "@/components/ui";
 import { GroundingGuardBadge } from "@/components/GroundingGuardBadge";
-import { saveDraft } from "@/lib/api";
+import { generateDraft, saveDraft } from "@/lib/api";
 import { checkGrounding } from "@/lib/grounding";
 import { clsx } from "@/lib/clsx";
 import type { Draft } from "@/lib/types";
@@ -31,15 +31,19 @@ export function DraftPanel({
   caseId,
   draft,
   evidenceIds,
+  aiEnabled = false,
 }: {
   caseId: string;
   draft: Draft;
   evidenceIds: string[];
+  /** True when AI_SERVICE_URL is set; enables backend draft generation. */
+  aiEnabled?: boolean;
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(draft.text);
   const [saving, setSaving] = useState(false);
+  const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Re-run the guard live while editing so the merchant sees the effect of a
@@ -67,6 +71,20 @@ export function DraftPanel({
     setText(draft.text);
     setEditing(false);
     setError(null);
+  }
+
+  async function onGenerate() {
+    setGenerating(true);
+    setError(null);
+    try {
+      await generateDraft(caseId);
+      setEditing(false);
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to generate draft");
+    } finally {
+      setGenerating(false);
+    }
   }
 
   const shown = editing ? live : {
@@ -154,12 +172,24 @@ export function DraftPanel({
               </button>
             </>
           ) : (
-            <button
-              onClick={() => setEditing(true)}
-              className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Edit draft
-            </button>
+            <>
+              <button
+                onClick={() => setEditing(true)}
+                className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Edit draft
+              </button>
+              {aiEnabled ? (
+                <button
+                  onClick={onGenerate}
+                  disabled={generating}
+                  title="Regenerate a grounded draft from the case evidence via the AI service"
+                  className="rounded-lg border border-indigo-300 px-3 py-1.5 text-sm font-medium text-indigo-700 hover:bg-indigo-50 disabled:opacity-50"
+                >
+                  {generating ? "Generating…" : "Generate from evidence"}
+                </button>
+              ) : null}
+            </>
           )}
         </div>
       </CardBody>

@@ -76,9 +76,11 @@ export function checkGrounding(
   };
 }
 
-/** Rebuild a Draft object after an edit, re-running the guard. */
-export function buildDraft(text: string, evidenceIds: string[]): Draft {
-  const result = checkGrounding(text, evidenceIds);
+/** Build a Draft from a grounding verdict (local or from the AI service). */
+export function draftFromGrounding(
+  text: string,
+  result: GroundingResult,
+): Draft {
   return {
     text,
     citations: result.citations,
@@ -86,4 +88,9 @@ export function buildDraft(text: string, evidenceIds: string[]): Draft {
     uncitedSentences: result.uncitedSentences,
     updatedAt: new Date().toISOString(),
   };
+}
+
+/** Rebuild a Draft object after an edit, re-running the local guard. */
+export function buildDraft(text: string, evidenceIds: string[]): Draft {
+  return draftFromGrounding(text, checkGrounding(text, evidenceIds));
 }
