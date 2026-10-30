@@ -4,7 +4,8 @@ from fastapi import Depends, FastAPI
 from pydantic import BaseModel, Field
 
 from .classify import classify
-from .draft import Evidence, draft_response
+from .draft import Evidence
+from .drafting import generate_draft
 from .grounding import check_grounding
 from .registry import ModelRegistry, get_registry
 from .scoring import Features, decide, score
@@ -85,11 +86,14 @@ class DraftResponse(BaseModel):
     grounding_passed: bool
     uncited_sentences: list[str]
     claims_count: int
+    # "groq" when an LLM draft passed the guard, else "template" (the
+    # deterministic fallback). Lets callers show how a draft was produced.
+    source: str = "template"
 
 
 @app.post("/draft", response_model=DraftResponse)
 def draft_dispute(req: DraftRequest) -> DraftResponse:
-    d = draft_response(
+    d, source = generate_draft(
         req.reason, [Evidence(id=e.id, type=e.type, summary=e.summary) for e in req.evidence]
     )
     return DraftResponse(
@@ -99,6 +103,7 @@ def draft_dispute(req: DraftRequest) -> DraftResponse:
         grounding_passed=d.grounding_passed,
         uncited_sentences=d.uncited_sentences,
         claims_count=d.claims_count,
+        source=source,
     )
 
 

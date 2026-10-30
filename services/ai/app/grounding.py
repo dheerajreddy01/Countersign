@@ -13,6 +13,40 @@ from dataclasses import dataclass, field
 _CITATION_RE = re.compile(r"\[E\d+\]")
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
+# A period after a single-letter initial ("signed by D. Reddy") or a common
+# abbreviation is not a sentence boundary. Splitting there would strip the
+# trailing [E<id>] marker off a legitimate sentence and flag the remainder as
+# an uncited claim, so a correctly cited draft would be rejected.
+_ABBREVIATIONS = frozenset(
+    {"mr", "mrs", "ms", "dr", "jr", "sr", "inc", "ltd", "co", "corp", "st", "no", "vs", "approx"}
+)
+
+
+# Quotes and brackets that can sit in front of an initial, as in: signed by
+# "D. Reddy". They must be stripped before the token is measured, or the
+# initial is not recognised and the sentence is split at the wrong place.
+_OPENING_PUNCTUATION = "\"'\u201c\u201d\u2018\u2019([{\u00ab\u2039"
+
+
+def _ends_with_abbreviation(fragment: str) -> bool:
+    if not fragment.endswith("."):
+        return False
+    token = fragment[:-1].rsplit(" ", 1)[-1].lstrip(_OPENING_PUNCTUATION)
+    if not token:
+        return False
+    return (len(token) == 1 and token.isalpha() and token.isupper()) or token.lower() in _ABBREVIATIONS
+
+
+def _rejoin_abbreviations(parts: list[str]) -> list[str]:
+    """Undo splits that fell inside an initial or abbreviation."""
+    merged: list[str] = []
+    for part in parts:
+        if merged and _ends_with_abbreviation(merged[-1]):
+            merged[-1] = f"{merged[-1]} {part}"
+        else:
+            merged.append(part)
+    return merged
+
 # Connective / procedural openings that are not factual claims and so do not
 # need a citation. Keeps the guard aimed at invented evidence, not ordinary prose.
 _EXEMPT_PREFIX = re.compile(
@@ -22,11 +56,23 @@ _EXEMPT_PREFIX = re.compile(
 )
 
 
-def _split_sentences(text: str) -> list[str]:
-    collapsed = re.sub(r"\s+", " ", text).strip()
-    if not collapsed:
-        return []
-    return [s.strip() for s in _SENTENCE_SPLIT.split(collapsed) if s.strip()]
+def split_sentences(text: str) -> list[str]:
+    """Split into the units the guard checks.
+
+    A line break is a boundary in its own right, not just whitespace. Models
+    write one claim per line and routinely omit the terminal period after a
+    citation marker; collapsing newlines first would merge an uncited claim
+    into a cited neighbour and hide it from the guard entirely.
+    """
+    sentences: list[str] = []
+    for line in text.splitlines():
+        # Collapse runs of spaces/tabs but keep the line boundary itself.
+        collapsed = re.sub(r"[^\S\n]+", " ", line).strip()
+        if not collapsed:
+            continue
+        parts = [s.strip() for s in _SENTENCE_SPLIT.split(collapsed) if s.strip()]
+        sentences.extend(_rejoin_abbreviations(parts))
+    return sentences
 
 
 def _is_factual_claim(sentence: str) -> bool:
@@ -57,7 +103,7 @@ def check_grounding(text: str, evidence_ids: list[str]) -> GroundingResult:
     used: list[str] = []
     unknown: list[str] = []
 
-    for sentence in _split_sentences(text):
+    for sentence in split_sentences(text):
         ids = [_bare_id(m) for m in _CITATION_RE.findall(sentence)]
         for cid in ids:
             if cid in known:
