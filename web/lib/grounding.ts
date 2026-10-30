@@ -4,17 +4,73 @@
 // backend runs the authoritative check; this lets the merchant re-run it live
 // while editing, and demonstrates a made-up sentence being rejected.
 
-import type { Citation, Draft } from "./types";
+import type { Citation, Draft, DraftSource } from "./types";
 
 const CITATION_RE = /\[E\d+\]/g;
 
-/** Split into sentences, keeping markers attached to their sentence. */
+// A period after a single-letter initial ("signed by D. Reddy", often quoted)
+// or a common abbreviation is not a sentence boundary. Splitting there would
+// strip the trailing [E<id>] marker off a legitimate sentence and flag the
+// remainder as an uncited claim, rejecting a correctly cited draft.
+const ABBREVIATIONS = new Set([
+  "mr", "mrs", "ms", "dr", "jr", "sr", "inc", "ltd",
+  "co", "corp", "st", "no", "vs", "approx",
+]);
+
+// Quotes and brackets that can sit in front of an initial. They must be
+// stripped before the token is measured, or the initial is not recognised.
+const OPENING_PUNCTUATION = /^["'\u201c\u201d\u2018\u2019([{\u00ab\u2039]+/;
+
+function endsWithAbbreviation(fragment: string): boolean {
+  if (!fragment.endsWith(".")) return false;
+  const token = (fragment.slice(0, -1).split(" ").pop() ?? "").replace(
+    OPENING_PUNCTUATION,
+    "",
+  );
+  if (!token) return false;
+  const isInitial =
+    token.length === 1 &&
+    token.toUpperCase() === token &&
+    token.toLowerCase() !== token;
+  return isInitial || ABBREVIATIONS.has(token.toLowerCase());
+}
+
+/** Undo splits that fell inside an initial or abbreviation. */
+function rejoinAbbreviations(parts: string[]): string[] {
+  const merged: string[] = [];
+  for (const part of parts) {
+    const last = merged.at(-1);
+    if (last !== undefined && endsWithAbbreviation(last)) {
+      merged[merged.length - 1] = `${last} ${part}`;
+    } else {
+      merged.push(part);
+    }
+  }
+  return merged;
+}
+
+/**
+ * Split into the units the guard checks, keeping markers attached to their
+ * sentence. Mirrors split_sentences() in services/ai/app/grounding.py.
+ *
+ * A line break is a boundary in its own right, not just whitespace: models
+ * write one claim per line and routinely omit the terminal period after the
+ * citation marker, so collapsing newlines would merge an uncited claim into a
+ * cited neighbour and hide it from the guard.
+ */
 function splitSentences(text: string): string[] {
-  return text
-    .replace(/\s+/g, " ")
-    .split(/(?<=[.!?])\s+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const sentences: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    // Collapse runs of spaces/tabs but keep the line boundary itself.
+    const collapsed = line.replace(/[^\S\n]+/g, " ").trim();
+    if (!collapsed) continue;
+    const parts = collapsed
+      .split(/(?<=[.!?])\s+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    sentences.push(...rejoinAbbreviations(parts));
+  }
+  return sentences;
 }
 
 /**
@@ -80,12 +136,14 @@ export function checkGrounding(
 export function draftFromGrounding(
   text: string,
   result: GroundingResult,
+  source?: DraftSource,
 ): Draft {
   return {
     text,
     citations: result.citations,
     groundingPassed: result.passed,
     uncitedSentences: result.uncitedSentences,
+    source,
     updatedAt: new Date().toISOString(),
   };
 }

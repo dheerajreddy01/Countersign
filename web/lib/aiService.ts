@@ -9,6 +9,7 @@
 // handlers under app/api, which always run on the server.
 
 import type { GroundingResult } from "./grounding";
+import type { DraftSource } from "./types";
 
 function baseUrl(): string | null {
   const url = process.env.AI_SERVICE_URL?.trim();
@@ -81,6 +82,12 @@ export interface GeneratedDraft {
   groundingPassed: boolean;
   uncitedSentences: string[];
   claimsCount: number;
+  /**
+   * Which drafter the backend used. The AI service reports "groq" only when an
+   * LLM draft passed the grounding guard, else "template". Older builds of the
+   * service omit the field; treat that as the template drafter.
+   */
+  source: DraftSource;
 }
 
 interface DraftBackendResponse {
@@ -90,6 +97,7 @@ interface DraftBackendResponse {
   grounding_passed: boolean;
   uncited_sentences: string[];
   claims_count: number;
+  source?: string;
 }
 
 export interface EvidenceForDraft {
@@ -124,5 +132,6 @@ export async function draftViaService(
     groundingPassed: r.grounding_passed,
     uncitedSentences: r.uncited_sentences,
     claimsCount: r.claims_count,
+    source: r.source === "groq" ? "groq" : "template",
   };
 }

@@ -53,6 +53,8 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
+      # Fails if lib/grounding.ts drifts from services/ai/app/grounding.py.
+      - run: npm run test:guard
       - run: npm run build
 
   web-image:

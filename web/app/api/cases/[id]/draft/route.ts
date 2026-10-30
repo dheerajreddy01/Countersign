@@ -86,15 +86,19 @@ export async function POST(
 
   // The backend returns bare citation ids; rebuild the console's Draft shape and
   // keep its grounding verdict as the authoritative one.
-  const draft = draftFromGrounding(generated.text, {
-    passed: generated.groundingPassed,
-    uncitedSentences: generated.uncitedSentences,
-    citations: generated.citations.map((id) => ({
-      marker: id,
-      evidenceId: id,
-    })),
-    unknownMarkers: [],
-  });
+  const draft = draftFromGrounding(
+    generated.text,
+    {
+      passed: generated.groundingPassed,
+      uncitedSentences: generated.uncitedSentences,
+      citations: generated.citations.map((id) => ({
+        marker: id,
+        evidenceId: id,
+      })),
+      unknownMarkers: [],
+    },
+    generated.source,
+  );
 
   const c = setGeneratedDraft(params.id, draft);
   if (!c) {

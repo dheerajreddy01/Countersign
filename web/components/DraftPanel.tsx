@@ -98,7 +98,23 @@ export function DraftPanel({
       <CardHeader
         title="Drafted response"
         subtitle="The drafter may only state facts that cite an evidence record"
-        action={<GroundingGuardBadge passed={shown.passed} />}
+        action={
+          <div className="flex items-center gap-2">
+            {!editing && draft.source ? (
+              <span
+                title={
+                  draft.source === "groq"
+                    ? "Written by the Groq LLM, then passed the grounding guard"
+                    : "Written by the deterministic template drafter"
+                }
+                className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-500"
+              >
+                {draft.source === "groq" ? "LLM draft" : "Template draft"}
+              </span>
+            ) : null}
+            <GroundingGuardBadge passed={shown.passed} />
+          </div>
+        }
       />
       <CardBody className="space-y-3">
         {editing ? (
