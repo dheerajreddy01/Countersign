@@ -15,8 +15,9 @@ import httpx
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 # Overridable via GROQ_MODEL. Groq rotates its hosted model ids, so if this
-# default is retired, set GROQ_MODEL to a currently listed model.
-DEFAULT_MODEL = "llama-3.3-70b-versatile"
+# default is retired, set GROQ_MODEL to a currently listed model
+# (GET https://api.groq.com/openai/v1/models). Verified served 2026-10-30.
+DEFAULT_MODEL = "openai/gpt-oss-120b"
 TIMEOUT_S = 15.0
 
 
@@ -38,7 +39,7 @@ def complete(
     user: str,
     *,
     temperature: float = 0.2,
-    max_tokens: int = 900,
+    max_tokens: int = 2000,
 ) -> str:
     """Return the assistant message for a system+user prompt, or raise
     LLMUnavailable on any missing-key, transport, or response-shape failure."""
@@ -54,6 +55,11 @@ def complete(
                 "model": model_name(),
                 "temperature": temperature,
                 "max_tokens": max_tokens,
+                # gpt-oss models bill their hidden reasoning against
+                # max_tokens (300+ tokens even on a short prompt), which can
+                # starve the letter itself. Keep reasoning minimal; this is a
+                # formatting task, not a puzzle. Ignored by models without it.
+                "reasoning_effort": "low",
                 "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
@@ -63,6 +69,13 @@ def complete(
         )
         resp.raise_for_status()
         data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        choice = data["choices"][0]
+        if choice.get("finish_reason") == "length":
+            # A letter cut off mid-sentence must never reach the guard: the
+            # trailing fragment is often too short to read as a factual claim,
+            # so it would pass unflagged. Treat truncation as unavailability
+            # and let the caller fall back to the template drafter.
+            raise LLMUnavailable("Groq response was truncated (finish_reason=length)")
+        return choice["message"]["content"]
     except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
         raise LLMUnavailable(f"Groq request failed: {exc}") from exc

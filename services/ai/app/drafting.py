@@ -17,7 +17,7 @@ from typing import Callable, Literal
 from . import llm
 from .classify import classify
 from .draft import Draft, Evidence, draft_response
-from .grounding import check_grounding
+from .grounding import check_grounding, split_sentences
 
 # A completion function: (system_prompt, user_prompt) -> assistant text. Injected
 # in tests; defaults to the real Groq client.
@@ -28,7 +28,6 @@ DraftSource = Literal["groq", "template"]
 MAX_ATTEMPTS = 2
 
 _CITATION_RE = re.compile(r"\[E\d+\]")
-_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
 INTRO = "Dear disputes team."
 CLOSING = "We respectfully request that this dispute be resolved in the merchant's favour."
@@ -75,7 +74,7 @@ def _user_prompt(category: str, evidence: list[Evidence], feedback: str) -> str:
 
 def _count_cited_sentences(text: str, known_ids: set[str]) -> int:
     count = 0
-    for sentence in _SENTENCE_SPLIT.split(text.strip()):
+    for sentence in split_sentences(text):
         ids = {m[1:-1] for m in _CITATION_RE.findall(sentence)}
         if ids & known_ids:
             count += 1
