@@ -23,6 +23,12 @@ func newTestStore(t *testing.T) (*Store, context.Context) {
 	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
+		// Skipping locally is a convenience. Skipping in CI would let the
+		// integration job pass green having run nothing at all, which is
+		// worse than no job, so fail there instead.
+		if os.Getenv("CI") != "" {
+			t.Fatal("TEST_DATABASE_URL is required in CI: the integration job must not pass vacuously")
+		}
 		t.Skip("TEST_DATABASE_URL is not set")
 	}
 	ctx := context.Background()
