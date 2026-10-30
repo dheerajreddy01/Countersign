@@ -86,6 +86,9 @@ export interface Decision {
   modelVersions: Record<string, string>;
 }
 
+/** Which drafter produced a generated draft. */
+export type DraftSource = "groq" | "template";
+
 export interface Citation {
   /** The marker as it appears in the draft text, e.g. "E1". */
   marker: string;
@@ -99,6 +102,11 @@ export interface Draft {
   /** False when any sentence states a fact without citing an evidence record. */
   groundingPassed: boolean;
   uncitedSentences: string[];
+  /**
+   * Which drafter produced the text: the Groq LLM or the deterministic
+   * template. Undefined for a merchant-authored edit, which is neither.
+   */
+  source?: DraftSource;
   updatedAt: string;
 }
 

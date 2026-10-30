@@ -4,7 +4,7 @@
 // bypassed in favour of the Go console API.
 
 import { buildCases } from "./fixtures";
-import { buildDraft } from "./grounding";
+import { buildDraft, draftFromGrounding, type GroundingResult } from "./grounding";
 import {
   toSummary,
   type ActionKind,
@@ -49,17 +49,46 @@ export function getCase(id: string): DisputeCase | undefined {
   return cases().find((c) => c.id === id);
 }
 
-export function updateDraftText(id: string, text: string): DisputeCase | undefined {
+// `grounding` is the authoritative verdict from the AI service when
+// AI_SERVICE_URL is set; when omitted, the local mirror of the guard is used so
+// the console still works standalone.
+export function updateDraftText(
+  id: string,
+  text: string,
+  grounding?: GroundingResult,
+): DisputeCase | undefined {
   const c = getCase(id);
   if (!c) return undefined;
   const evidenceIds = c.evidence.map((e) => e.id);
-  c.draft = buildDraft(text, evidenceIds);
+  c.draft = grounding
+    ? draftFromGrounding(text, grounding)
+    : buildDraft(text, evidenceIds);
   c.updatedAt = new Date().toISOString();
   c.timeline.push({
     at: c.updatedAt,
     actor: "merchant",
     event: "Edited draft",
     detail: c.draft.groundingPassed ? "Grounding guard passed" : "Grounding guard still flags uncited claims",
+  });
+  return c;
+}
+
+/** Replace the draft with an AI-generated one (POST /api/cases/:id/draft). */
+export function setGeneratedDraft(
+  id: string,
+  draft: DisputeCase["draft"],
+): DisputeCase | undefined {
+  const c = getCase(id);
+  if (!c) return undefined;
+  c.draft = draft;
+  c.updatedAt = new Date().toISOString();
+  c.timeline.push({
+    at: c.updatedAt,
+    actor: "ai-service",
+    event: "Generated draft from evidence",
+    detail: draft.groundingPassed
+      ? `Grounded response drafted (${draft.citations.length} citation(s))`
+      : "Draft generated but grounding guard flagged uncited claims",
   });
   return c;
 }

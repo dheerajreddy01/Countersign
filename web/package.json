@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start -p 3000",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:guard": "tsc lib/grounding.ts --outDir .guard-build --target es2022 --module es2022 --moduleResolution bundler --skipLibCheck && node --test scripts/grounding-parity.test.mjs"
   },
   "dependencies": {
     "next": "14.2.35",

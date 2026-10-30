@@ -32,8 +32,16 @@ switch it onto the real backend (see `.env.example`):
 
 | Var | Effect |
 |---|---|
-| `CONSOLE_API_URL` | Point the case endpoints at the Go console API instead of the demo store. |
-| `AI_SERVICE_URL` | `POST /api/score` proxies to the Python AI service (`services/ai`); unset, it uses a local mirror of the same decision rule. |
+| `CONSOLE_API_URL` | Point the case endpoints at the Go console API instead of the demo store (reserved). |
+| `AI_SERVICE_URL` | Call the Python AI service (`services/ai`) for scoring (`/score`), the authoritative grounding guard on a draft edit (`/ground`), and draft generation (`/draft`). Unset, scoring and grounding use a local mirror and generation is disabled, so the console runs standalone. |
+
+When `AI_SERVICE_URL` is set, saving a draft (`PUT /api/cases/:id/draft`) grounds
+it against the backend guard, and a **Generate from evidence** button appears on
+the draft panel that calls `POST /api/cases/:id/draft` to produce a
+grounded-by-construction response from the case's reason and evidence. Each
+response carries a `draftSource` of `ai-service` or `local`. If the service is
+unreachable, scoring and grounding fall back to the local mirror; generation
+returns `501`/`502` rather than inventing text locally.
 
 The shapes in `lib/types.ts` mirror `infra/postgres/init/001_schema.sql` and the
 AI service contract in `services/ai/app/main.py`.
