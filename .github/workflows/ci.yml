@@ -23,6 +23,58 @@ jobs:
       - run: test -z "$(gofmt -l .)"
       - run: go test ./...
 
+  pipeline:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/pipeline
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - run: go vet ./...
+      - run: test -z "$(gofmt -l .)"
+      - run: go test ./...
+
+  pipeline-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: countersign
+          POSTGRES_PASSWORD: countersign
+          POSTGRES_DB: countersign
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U countersign"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://countersign:countersign@localhost:5432/countersign?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      # A service container does not run the files in infra/postgres/init the
+      # way the compose volume mount does, so apply them in order here. This
+      # also checks the migrations themselves actually apply.
+      - name: Apply the schema
+        run: |
+          for file in infra/postgres/init/*.sql; do
+            echo "applying $file"
+            psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$file"
+          done
+      - name: Integration tests against Postgres
+        # -v so the log names every test that ran: a silent skip must not read
+        # as a pass.
+        run: go test -v -tags integration -count=1 ./internal/store/
+        working-directory: services/pipeline
+
   ai:
     runs-on: ubuntu-latest
     defaults:

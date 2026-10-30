@@ -61,6 +61,51 @@ services:
     ports:
       - "8080:8080"
 
+  normalizer:
+    build:
+      context: ./services/pipeline
+      args:
+        CMD: normalizer
+    env_file: [.env]
+    environment:
+      REDPANDA_PROXY_URL: http://redpanda:8082
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+
+  caseservice:
+    build:
+      context: ./services/pipeline
+      args:
+        CMD: caseservice
+    env_file: [.env]
+    environment:
+      REDPANDA_PROXY_URL: http://redpanda:8082
+      CASE_SERVICE_ADDR: ":8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    ports:
+      - "8081:8081"
+
+  mandate:
+    build:
+      context: ./services/pipeline
+      args:
+        CMD: mandate
+    env_file: [.env]
+    environment:
+      MANDATE_SERVICE_ADDR: ":8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8083:8082"
+
   ai:
     build: ./services/ai
     env_file: [.env]

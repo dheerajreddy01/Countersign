@@ -17,7 +17,7 @@ tasks:
         platforms: [windows]
 
   up:
-    desc: Start Postgres, Redpanda, topics, gateway and AI service
+    desc: Start Postgres, Redpanda, topics, gateway, pipeline, AI service and console
     deps: [setup]
     cmds: [docker compose up --build -d]
 
@@ -45,26 +45,52 @@ tasks:
     desc: Run all tests
     cmds:
       - task: test:gateway
+      - task: test:pipeline
       - task: test:ai
+      - task: test:web
 
   test:gateway:
     desc: Go tests for the gateway
     dir: services/gateway
     cmds: [go test ./...]
 
+  test:pipeline:
+    desc: Go tests for the event spine and mandate ledger
+    dir: services/pipeline
+    cmds: [go test ./...]
+
+  test:pipeline:integration:
+    desc: Postgres-backed tests for the pipeline store (needs `task up`)
+    dir: services/pipeline
+    env:
+      TEST_DATABASE_URL: postgres://countersign:countersign@localhost:5432/countersign?sslmode=disable
+    cmds: [go test -tags integration ./internal/store/]
+
   test:ai:
     desc: Python tests for the AI service
     dir: services/ai
     cmds: [python -m pytest]
 
+  test:web:
+    desc: Guard parity test for the console (TypeScript mirror vs Python)
+    dir: web
+    cmds: [npm run test:guard]
+
   lint:
     desc: Static checks
     cmds:
       - task: lint:gateway
+      - task: lint:pipeline
       - task: compose:check
 
   lint:gateway:
     dir: services/gateway
+    cmds:
+      - go vet ./...
+      - 'test -z "$(gofmt -l .)"'
+
+  lint:pipeline:
+    dir: services/pipeline
     cmds:
       - go vet ./...
       - 'test -z "$(gofmt -l .)"'
