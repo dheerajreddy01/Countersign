@@ -24,6 +24,11 @@ export async function saveDraft(
   return parse<DisputeCase>(res);
 }
 
+export async function generateDraft(caseId: string): Promise<DisputeCase> {
+  const res = await fetch(`/api/cases/${caseId}/draft`, { method: "POST" });
+  return parse<DisputeCase>(res);
+}
+
 export async function submitAction(
   caseId: string,
   kind: ActionKind,

@@ -81,6 +81,7 @@ export default function CasePage({ params }: { params: { id: string } }) {
             caseId={c.id}
             draft={c.draft}
             evidenceIds={c.evidence.map((e) => e.id)}
+            aiEnabled={Boolean(process.env.AI_SERVICE_URL?.trim())}
           />
           <ActionBar
             caseId={c.id}
