@@ -42,6 +42,7 @@ const REASON_LABELS: Record<DisputeReason, string> = {
   not_as_described: "Not as described",
   duplicate: "Duplicate charge",
   credit_not_processed: "Credit not processed",
+  other: "Unmodelled reason",
 };
 
 export function reasonLabel(reason: DisputeReason): string {

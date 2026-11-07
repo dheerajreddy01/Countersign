@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isLive, LIVE_READ_ONLY_MESSAGE } from "@/lib/data";
 import { getCase, setGeneratedDraft, updateDraftText } from "@/lib/store";
 import { draftFromGrounding } from "@/lib/grounding";
 import {
@@ -21,6 +22,13 @@ export async function PUT(
   req: Request,
   { params }: { params: { id: string } },
 ) {
+  if (isLive()) {
+    return NextResponse.json(
+      { error: LIVE_READ_ONLY_MESSAGE },
+      { status: 501 },
+    );
+  }
+
   let body: unknown;
   try {
     body = await req.json();
@@ -54,6 +62,13 @@ export async function POST(
   _req: Request,
   { params }: { params: { id: string } },
 ) {
+  if (isLive()) {
+    return NextResponse.json(
+      { error: LIVE_READ_ONLY_MESSAGE },
+      { status: 501 },
+    );
+  }
+
   const existing = getCase(params.id);
   if (!existing) {
     return NextResponse.json({ error: "case not found" }, { status: 404 });

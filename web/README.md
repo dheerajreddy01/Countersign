@@ -18,6 +18,7 @@ npm run dev     # http://localhost:3000
 npm run build       # production build
 npm run typecheck   # tsc --noEmit
 npm run lint        # next lint
+npm run test:guard  # parity guard: the mirrors vs the Python service
 ```
 
 Node 18.18+ (developed on Node 24). No other services are required — the
@@ -43,8 +44,28 @@ response carries a `draftSource` of `ai-service` or `local`. If the service is
 unreachable, scoring and grounding fall back to the local mirror; generation
 returns `501`/`502` rather than inventing text locally.
 
-The shapes in `lib/types.ts` mirror `infra/postgres/init/001_schema.sql` and the
+The shapes in `lib/types.ts` mirror `infra/postgres/migrations/001_schema.sql` and the
 AI service contract in `services/ai/app/main.py`.
+
+## The parity guard
+
+`lib/scoring.ts` and `lib/grounding.ts` reimplement `services/ai/app/scoring.py`
+and `grounding.py` so the console works with the AI service absent. Drift there
+would show a merchant a verdict the deciding service does not hold, so both
+sides assert against one generated fixture:
+
+| | |
+|---|---|
+| `tests/parity/cases.json` | expectations, generated from the Python |
+| `scripts/parity_fixtures.py` | regenerates that file (run from the repo root) |
+| `web/tests/parity.test.ts` | `npm run test:guard` — the TypeScript still matches |
+| `services/ai/tests/test_parity.py` | `pytest` — the Python still matches |
+
+Change a coefficient or a guard rule in Python and its own suite fails, because
+the fixture is now stale. Regenerate, and the TypeScript suite fails until the
+mirror follows. The cases include the boundaries that make this work: the
+four-word threshold for "is this a factual claim", the uppercase-only `[E1]`
+marker, the fraud gate on `unauthorized` reasons and its 0..1 clamp.
 
 ## Layout
 

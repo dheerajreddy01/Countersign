@@ -23,6 +23,58 @@ jobs:
       - run: test -z "$(gofmt -l .)"
       - run: go test ./...
 
+  pipeline:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/pipeline
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - run: go vet ./...
+      - run: test -z "$(gofmt -l .)"
+      - run: go test ./...
+
+  pipeline-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: countersign
+          POSTGRES_PASSWORD: countersign
+          POSTGRES_DB: countersign
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U countersign"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://countersign:countersign@localhost:5432/countersign?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      # A service container does not run the files in infra/postgres/migrations the
+      # way the compose volume mount does, so apply them in order here. This
+      # also checks the migrations themselves actually apply.
+      - name: Apply the schema
+        run: |
+          for file in infra/postgres/migrations/*.sql; do
+            echo "applying $file"
+            psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$file"
+          done
+      - name: Integration tests against Postgres
+        # -v so the log names every test that ran: a silent skip must not read
+        # as a pass.
+        run: go test -v -tags integration -count=1 ./internal/store/
+        working-directory: services/pipeline
+
   ai:
     runs-on: ubuntu-latest
     defaults:
@@ -53,7 +105,8 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
-      # Fails if lib/grounding.ts drifts from services/ai/app/grounding.py.
+      # Fails if lib/scoring.ts or lib/grounding.ts drifts from
+      # services/ai/app, which generated tests/parity/cases.json.
       - run: npm run test:guard
       - run: npm run build
 
@@ -73,7 +126,13 @@ jobs:
           done
           curl -fsS http://localhost:3000/ >/dev/null
           curl -fsS http://localhost:3000/api/cases >/dev/null
-          curl -fsS http://localhost:3000/cases/1001 | grep -q "Fight the dispute"
+          curl -fsS http://localhost:3000/cases >/dev/null
+          # Assert on the case's own data, not on banner copy: this step used to
+          # grep for "Fight the dispute" and broke when the wording changed,
+          # which says nothing about whether the image serves a case.
+          curl -fsS http://localhost:3000/cases/1001 | grep -q "PP-D-1001"
+          curl -fsS http://localhost:3000/cases/1001 | grep -q "Jordan Mercer"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/cases/nope)" = 404
       - name: Container logs on failure
         if: failure()
         run: docker logs web || true
@@ -88,3 +147,17 @@ jobs:
       - run: cp .env.example .env
       - run: docker compose config --quiet
       - run: bash -n infra/redpanda/create-topics.sh
+      - run: bash -n infra/postgres/migrate.sh
+
+  blueprint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml jsonschema
+      # Validates render.yaml against Render's published schema, and checks
+      # that every fromService/fromDatabase names something the file defines
+      # and every build path still exists.
+      - run: python scripts/check-blueprint.py

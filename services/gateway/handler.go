@@ -1,8 +1,8 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -20,7 +20,13 @@ type deduper interface {
 	Seen(id string) bool
 }
 
-func newRouter(cfg config, pub publisher, dd deduper) http.Handler {
+// verifier confirms a delivery really came from PayPal, signed for this
+// webhook id. Injected so the handler can be tested without reaching PayPal.
+type verifier interface {
+	Verify(ctx context.Context, header http.Header, body []byte) error
+}
+
+func newRouter(cfg config, pub publisher, dd deduper, v verifier) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -36,7 +42,14 @@ func newRouter(cfg config, pub publisher, dd deduper) http.Handler {
 		}
 
 		if !cfg.skipVerification {
-			if err := verifySignature(r, body); err != nil {
+			if v == nil {
+				// Refusing is the only safe answer: without a verifier there is
+				// no way to tell a PayPal delivery from anyone else's POST.
+				log.Print("webhook rejected: no verifier configured")
+				http.Error(w, "signature verification unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if err := v.Verify(r.Context(), r.Header, body); err != nil {
 				log.Printf("webhook rejected: %v", err)
 				http.Error(w, "signature verification failed", http.StatusUnauthorized)
 				return
@@ -68,13 +81,6 @@ func newRouter(cfg config, pub publisher, dd deduper) http.Handler {
 	})
 
 	return mux
-}
-
-// verifySignature must validate the PayPal transmission headers against the
-// configured webhook id (POST /v1/notifications/verify-webhook-signature).
-// Not implemented yet, so it fails closed.
-func verifySignature(_ *http.Request, _ []byte) error {
-	return errors.New("signature verification not implemented")
 }
 
 type memoryDeduper struct {

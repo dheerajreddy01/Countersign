@@ -1,0 +1,204 @@
+# Render Blueprint for Countersign.
+#
+# Six services plus a managed Postgres, all in one region so they can reach
+# each other over the private network.
+#
+# The broker runs as a private service with a disk because Render has no
+# managed Kafka. That is less alarming than it sounds here: the pipeline only
+# ever talks to Redpanda over its HTTP proxy (services/pipeline/internal/bus),
+# so nothing needs the Kafka protocol across the network, and Redpanda's only
+# Kafka client is its own proxy inside the same container — which is why the
+# advertised Kafka address below is 127.0.0.1.
+#
+# Internal hostnames are assigned at deploy time and carry a generated suffix,
+# so every cross-service address comes from `fromService` rather than being
+# written out. Blueprints have no string interpolation, which is why the
+# services accept a `*_HOSTPORT` variable alongside the full URL form.
+#
+# Three steps remain after the first apply, all in docs/deploy.md:
+#   1. paste the values marked `sync: false` (PayPal credentials, the mandate
+#      signing key, the console password)
+#   2. apply the schema with infra/postgres/migrate.sh
+#   3. re-register the PayPal webhook at the gateway's new URL
+
+databases:
+  - name: countersign-postgres
+    plan: 0.1c-256mb
+    region: oregon
+    postgresMajorVersion: "16"
+    databaseName: countersign
+    user: countersign
+
+services:
+  # --- broker ---------------------------------------------------------------
+  # Needs the most memory of anything here. --overprovisioned tells Redpanda it
+  # is sharing a machine, which it must be told explicitly or it tunes itself
+  # for a dedicated box and refuses to start on a small instance.
+  #
+  # Topics are created on demand rather than by an init job: Render has no
+  # one-off task in a Blueprint, and the alternative is a cron job that exists
+  # only to run once. The trade is one partition per topic instead of three,
+  # which is no loss at demo volume.
+  - type: pserv
+    name: countersign-redpanda
+    runtime: image
+    region: oregon
+    plan: 1c-2g
+    image:
+      url: docker.redpanda.com/redpandadata/redpanda:v24.2.7
+    dockerCommand: >-
+      redpanda start
+      --smp 1
+      --memory 1G
+      --reserve-memory 0M
+      --overprovisioned
+      --kafka-addr 0.0.0.0:9092
+      --advertise-kafka-addr 127.0.0.1:9092
+      --pandaproxy-addr 0.0.0.0:8082
+      --advertise-pandaproxy-addr 127.0.0.1:8082
+      --set redpanda.auto_create_topics_enabled=true
+    disk:
+      name: redpanda-data
+      mountPath: /var/lib/redpanda/data
+      sizeGB: 5
+
+  # --- public: PayPal posts here -------------------------------------------
+  # The one service that must be reachable from outside, and the reason to
+  # deploy at all: a stable HTTPS URL that does not die with a local tunnel.
+  - type: web
+    name: countersign-gateway
+    runtime: docker
+    region: oregon
+    plan: 0.5c-512mb
+    dockerfilePath: ./services/gateway/Dockerfile
+    dockerContext: ./services/gateway
+    healthCheckPath: /healthz
+    envVars:
+      # Render routes to the port in $PORT, which is 10000.
+      - key: GATEWAY_ADDR
+        value: ":10000"
+      - key: REDPANDA_PROXY_HOSTPORT
+        fromService:
+          type: pserv
+          name: countersign-redpanda
+          property: hostport
+      - key: PAYPAL_API_BASE
+        value: https://api-m.sandbox.paypal.com
+      # Verification is the point of a public endpoint: with this true, anyone
+      # who learns the URL can post events into the pipeline.
+      - key: GATEWAY_SKIP_SIGNATURE_VERIFY
+        value: "false"
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
+
+  # --- public: the merchant console ----------------------------------------
+  # Behind basic auth (web/middleware.ts), because it shows every dispute.
+  # /healthz is outside that gate so this health check does not 401.
+  - type: web
+    name: countersign-console
+    runtime: docker
+    region: oregon
+    plan: 0.5c-512mb
+    dockerfilePath: ./web/Dockerfile
+    dockerContext: ./web
+    healthCheckPath: /healthz
+    envVars:
+      - key: CONSOLE_API_HOSTPORT
+        fromService:
+          type: pserv
+          name: countersign-caseservice
+          property: hostport
+      - key: CONSOLE_USER
+        value: merchant
+      - key: CONSOLE_PASSWORD
+        sync: false
+      # AI_SERVICE_URL is deliberately unset: the console's score endpoint falls
+      # back to the TypeScript mirror of the decision rule, which the parity
+      # guard keeps in step with the Python service.
+
+  # --- the spine ------------------------------------------------------------
+  # A worker, not a private service: it consumes and writes, and nothing needs
+  # to call it. Render cannot route internal traffic to a worker anyway.
+  - type: worker
+    name: countersign-normalizer
+    runtime: docker
+    region: oregon
+    plan: 0.5c-512mb
+    dockerfilePath: ./services/pipeline/Dockerfile
+    dockerContext: ./services/pipeline
+    dockerCommand: /normalizer
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: countersign-postgres
+          property: connectionString
+      - key: REDPANDA_PROXY_HOSTPORT
+        fromService:
+          type: pserv
+          name: countersign-redpanda
+          property: hostport
+
+  # Consumes dispute events and serves the read API the console reads.
+  - type: pserv
+    name: countersign-caseservice
+    runtime: docker
+    region: oregon
+    plan: 0.5c-512mb
+    dockerfilePath: ./services/pipeline/Dockerfile
+    dockerContext: ./services/pipeline
+    dockerCommand: /caseservice
+    envVars:
+      - key: CASE_SERVICE_ADDR
+        value: ":8081"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: countersign-postgres
+          property: connectionString
+      - key: REDPANDA_PROXY_HOSTPORT
+        fromService:
+          type: pserv
+          name: countersign-redpanda
+          property: hostport
+
+  # The mandate ledger. MANDATE_SIGNING_KEY must be set and must then never
+  # change: unset, the service mints a throwaway key per boot and every mandate
+  # signed with the previous one stops verifying.
+  - type: pserv
+    name: countersign-mandate
+    runtime: docker
+    region: oregon
+    plan: 0.5c-512mb
+    dockerfilePath: ./services/pipeline/Dockerfile
+    dockerContext: ./services/pipeline
+    dockerCommand: /mandate
+    envVars:
+      - key: MANDATE_SERVICE_ADDR
+        value: ":8082"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: countersign-postgres
+          property: connectionString
+      - key: MANDATE_SIGNING_KEY
+        sync: false
+
+  # Scoring and drafting.
+  - type: pserv
+    name: countersign-ai
+    runtime: docker
+    region: oregon
+    plan: 0.5c-512mb
+    dockerfilePath: ./services/ai/Dockerfile
+    dockerContext: ./services/ai
+    envVars:
+      - key: PORT
+        value: "8000"
+      - key: COST_TO_FIGHT_DEFAULT
+        value: "25.00"
+      # Unset means the fraud signal stays neutral; there is no trained model
+      # artifact in the repo to point at.
+      - key: FRAUD_MODEL_PATH
+        value: ""

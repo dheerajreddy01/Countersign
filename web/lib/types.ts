@@ -1,5 +1,5 @@
 // Shapes the merchant console renders. They mirror the Postgres schema in
-// infra/postgres/init/001_schema.sql and the AI service contract in
+// infra/postgres/migrations/001_schema.sql and the AI service contract in
 // services/ai/app/main.py, flattened into the per-case view the UI needs.
 
 export type DisputeReason =
@@ -7,7 +7,11 @@ export type DisputeReason =
   | "unauthorized"
   | "not_as_described"
   | "duplicate"
-  | "credit_not_processed";
+  | "credit_not_processed"
+  // What the normalizer emits for a PayPal reason Countersign does not model
+  // (ReasonOther in services/pipeline/internal/events/normalize.go). Such a
+  // case still reaches the board; it is simply not scored against a category.
+  | "other";
 
 export type DisputeStage =
   | "inquiry"

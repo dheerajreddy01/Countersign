@@ -29,6 +29,12 @@ The repo must be public.
 
 **Cut if behind**: appeals, analytics, ML retraining job (keep the outcome events and a simple update), multi-merchant support.
 
+**Cut (decided Oct 30)**: the IEEE-CIS fraud-likelihood model. The scorer keeps
+its `fraud_likelihood` coefficient and applies it whenever a model is
+registered, so this is a loader and an artifact away if there is time at the
+end. The evidence builder, executor and outcome capture all block the demo
+path, and they come first.
+
 ## Services and data
 
 **Kafka (Redpanda) topics**
@@ -56,7 +62,7 @@ The repo must be public.
 |---|---|---|
 | Oct 24-25 | PayPal sandbox accounts, app credentials, webhook tunnel, repo + license, Docker Compose with Postgres and Redpanda | Sandbox dispute arrives as a verified webhook in the log |
 | Oct 26-28 | Go gateway: signature verification, dedupe, topics, case service; PayPal client with OAuth and idempotency | Dispute becomes a `cases` row |
-| Oct 29-30 | Demo agent + mandate ledger; order, capture, tracking recorded | Agent order has a signed mandate linked to it |
+| Oct 29-30 | Demo agent + mandate ledger; order, capture, tracking recorded | **Done** for the ledger and the agent's mandate (signed, hash-chained, verifiable); PayPal order/capture/tracking still to wire |
 | Oct 31-Nov 2 | Evidence builder; Python AI service: classifier, scoring, EV, draft, grounding guard | Both demo cases produce a cited draft |
 | Nov 3-5 | Action executor against the Disputes API; sandbox adjudication; outcome stored | Evidence submitted and ruling recorded in sandbox |
 | Nov 6-8 | Next.js console + Bryntum Scheduler board; approve/edit flow | Full demo path runs from the UI |
