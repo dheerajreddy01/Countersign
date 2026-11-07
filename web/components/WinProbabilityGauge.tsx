@@ -55,7 +55,7 @@ export function WinProbabilityGauge({
         <div className={clsx("text-3xl font-semibold tabular-nums", textBand)}>
           {formatPercent(p)}
         </div>
-        <div className="text-xs text-slate-500">estimated P(win)</div>
+        <div className="text-xs text-slate-500">estimated chance of winning</div>
       </div>
     </div>
   );

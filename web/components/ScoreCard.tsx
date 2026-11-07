@@ -11,8 +11,8 @@ export function ScoreCard({ decision }: { decision: Decision }) {
   return (
     <Card>
       <CardHeader
-        title="Score"
-        subtitle="Logistic regression v1 · coefficients from published win-rate estimates"
+        title="Chance of winning"
+        subtitle="Scored from published win-rate estimates (logistic regression v1)"
         action={
           Object.keys(decision.modelVersions).length > 0 ? (
             <Badge tone="neutral">
@@ -28,7 +28,7 @@ export function ScoreCard({ decision }: { decision: Decision }) {
           <WinProbabilityGauge pWin={decision.pWin} />
           <div>
             <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">
-              Top contributing factors
+              What moves this case
             </p>
             <FactorBars factors={decision.factors} />
           </div>
@@ -41,7 +41,8 @@ export function ScoreCard({ decision }: { decision: Decision }) {
                 Fraud likelihood
               </p>
               <p className="text-xs text-slate-500">
-                Gradient-boosted signal, applied to unauthorized cases only
+                How much this looks like real card fraud. Used only when the
+                buyer says they did not authorise the charge.
               </p>
             </div>
             <Badge tone={fraud >= 0.5 ? "red" : "green"}>
