@@ -709,6 +709,108 @@
         "citations": [],
         "unknown_markers": []
       }
+    },
+    {
+      "name": "an uncited claim on its own line is flagged without a period",
+      "input": {
+        "text": "The parcel was delivered on 18 October [E1]\nThe buyer signed for it at the door",
+        "evidence_ids": [
+          "E1"
+        ]
+      },
+      "expected": {
+        "passed": false,
+        "uncited_sentences": [
+          "The buyer signed for it at the door"
+        ],
+        "citations": [
+          "E1"
+        ],
+        "unknown_markers": []
+      }
+    },
+    {
+      "name": "claims on separate lines are checked separately",
+      "input": {
+        "text": "Tracking shows delivery to the billing address [E1]\nThe buyer used the item for three weeks [E2]",
+        "evidence_ids": [
+          "E1",
+          "E2"
+        ]
+      },
+      "expected": {
+        "passed": true,
+        "uncited_sentences": [],
+        "citations": [
+          "E1",
+          "E2"
+        ],
+        "unknown_markers": []
+      }
+    },
+    {
+      "name": "an initial does not end the sentence",
+      "input": {
+        "text": "The parcel was signed for by D. Reddy at the door [E1].",
+        "evidence_ids": [
+          "E1"
+        ]
+      },
+      "expected": {
+        "passed": true,
+        "uncited_sentences": [],
+        "citations": [
+          "E1"
+        ],
+        "unknown_markers": []
+      }
+    },
+    {
+      "name": "a quoted initial does not end the sentence",
+      "input": {
+        "text": "The courier recorded the signature as “D. Reddy” on delivery [E1].",
+        "evidence_ids": [
+          "E1"
+        ]
+      },
+      "expected": {
+        "passed": true,
+        "uncited_sentences": [],
+        "citations": [
+          "E1"
+        ],
+        "unknown_markers": []
+      }
+    },
+    {
+      "name": "an abbreviation does not end the sentence",
+      "input": {
+        "text": "The order shipped to Acme Inc. on 3 March as tracked [E1].",
+        "evidence_ids": [
+          "E1"
+        ]
+      },
+      "expected": {
+        "passed": true,
+        "uncited_sentences": [],
+        "citations": [
+          "E1"
+        ],
+        "unknown_markers": []
+      }
+    },
+    {
+      "name": "greeting and closing together need no citation",
+      "input": {
+        "text": "Dear disputes team. We respectfully request that this dispute be resolved in the merchant's favour.",
+        "evidence_ids": []
+      },
+      "expected": {
+        "passed": true,
+        "uncited_sentences": [],
+        "citations": [],
+        "unknown_markers": []
+      }
     }
   ]
 }

@@ -136,6 +136,33 @@ GROUNDING_INPUTS: list[dict] = [
     {"name": "a lowercase marker is not a citation",
      "text": "The item was delivered to the buyer [e1].",
      "evidence_ids": ["E1", "e1"]},
+    # A line break is a boundary in its own right. Models write one claim per
+    # line and omit the terminal period after the marker, so collapsing
+    # newlines would merge an uncited claim into a cited neighbour and hide it.
+    {"name": "an uncited claim on its own line is flagged without a period",
+     "text": "The parcel was delivered on 18 October [E1]\n"
+             "The buyer signed for it at the door",
+     "evidence_ids": ["E1"]},
+    {"name": "claims on separate lines are checked separately",
+     "text": "Tracking shows delivery to the billing address [E1]\n"
+             "The buyer used the item for three weeks [E2]",
+     "evidence_ids": ["E1", "E2"]},
+    # A period after an initial or an abbreviation is not a sentence boundary.
+    # Splitting there strips the marker off the sentence and flags the
+    # remainder as uncited, rejecting a correctly cited draft.
+    {"name": "an initial does not end the sentence",
+     "text": "The parcel was signed for by D. Reddy at the door [E1].",
+     "evidence_ids": ["E1"]},
+    {"name": "a quoted initial does not end the sentence",
+     "text": "The courier recorded the signature as “D. Reddy” on delivery [E1].",
+     "evidence_ids": ["E1"]},
+    {"name": "an abbreviation does not end the sentence",
+     "text": "The order shipped to Acme Inc. on 3 March as tracked [E1].",
+     "evidence_ids": ["E1"]},
+    {"name": "greeting and closing together need no citation",
+     "text": "Dear disputes team. We respectfully request that this dispute "
+             "be resolved in the merchant's favour.",
+     "evidence_ids": []},
 ]
 
 
