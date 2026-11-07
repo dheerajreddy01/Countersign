@@ -105,6 +105,9 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
+      # The mirror guard: lib/scoring.ts and lib/grounding.ts must still agree
+      # with services/ai/app, which generated tests/parity/cases.json.
+      - run: npm run test:guard
       - run: npm run build
 
   web-image:
