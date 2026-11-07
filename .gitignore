@@ -6,6 +6,8 @@
 /bin/
 *.test
 *.out
+# `go build ./...` drops the binary beside the source on Windows.
+*.exe
 
 # Python
 __pycache__/

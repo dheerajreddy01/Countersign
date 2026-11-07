@@ -178,7 +178,14 @@ task test     # Go and Python tests (needs Go 1.22 and Python 3.12 locally)
 task --list   # everything else
 ```
 
-The webhook endpoint rejects every request until PayPal signature verification is implemented. For local testing only, set `GATEWAY_SKIP_SIGNATURE_VERIFY=true`. Branching and CI: [docs/branching.md](docs/branching.md).
+The gateway verifies every delivery against PayPal's
+`POST /v1/notifications/verify-webhook-signature` before it publishes anything,
+so it needs `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` and `PAYPAL_WEBHOOK_ID`
+and refuses to start without them. Anything PayPal does not confirm gets a 401,
+including a delivery missing the transmission headers or quoting a `cert_url`
+that is not a PayPal host. For local testing without credentials, set
+`GATEWAY_SKIP_SIGNATURE_VERIFY=true`, which accepts every POST unverified and
+says so in the log. Branching and CI: [docs/branching.md](docs/branching.md).
 
 Record a mandate the way the demo agent does, and then verify the ledger:
 
