@@ -68,6 +68,10 @@ interface ApiCase {
   transaction_id: string;
   created_at: string;
   updated_at: string;
+  // The list endpoint computes this in SQL and the detail endpoint sets it
+  // from the mandates it fetched, so a summary can report a mandate without
+  // carrying the mandate itself.
+  has_mandate?: boolean;
 }
 
 interface ApiAuditEntry {
@@ -180,6 +184,10 @@ function mapCase(
   const amount = Number.parseFloat(api.amount) || 0;
   const reason = oneOf(api.reason, REASONS, "other");
   const mandate = mapMandate(mandates);
+  // The board reads the list endpoint, which has the flag but not the mandate
+  // itself. Scoring off the flag keeps one case from showing two different
+  // win probabilities in the table and on its own page.
+  const mandateMatching = mandate !== null || api.has_mandate === true;
 
   return {
     id: String(api.id),
@@ -205,7 +213,7 @@ function mapCase(
       reason,
       deliveryConfirmed: false,
       signatureCaptured: false,
-      mandateMatching: mandate !== null,
+      mandateMatching,
       priorCustomerContact: false,
       buyerDisputeHistory: 0,
       daysToDeadline: daysUntil(api.respond_by),
@@ -234,9 +242,12 @@ async function get<T>(path: string): Promise<T | null> {
 export async function fetchSummaries(): Promise<CaseSummary[]> {
   const body = await get<{ cases: ApiCase[] | null }>("/cases");
   const rows = body?.cases ?? [];
-  // The list endpoint carries no timeline or mandate, so hasMandate on a
-  // summary is unknown here; the detail view is where a mandate is confirmed.
-  return rows.map((row) => toSummary(mapCase(row, [], [])));
+  // toSummary infers hasMandate from the mandate object, which the list
+  // endpoint does not carry, so take it from the flag instead.
+  return rows.map((row) => ({
+    ...toSummary(mapCase(row, [], [])),
+    hasMandate: row.has_mandate === true,
+  }));
 }
 
 /** One case with its timeline and mandate, or null when the id is unknown. */

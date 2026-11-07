@@ -67,6 +67,12 @@ type Case struct {
 	TransactionID   string     `json:"transaction_id"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
+
+	// HasMandate reports whether a mandate was recorded for the disputed
+	// transaction. ListCases computes it; the single-case reads leave it false
+	// and the caller sets it from the mandates it fetched, so the board and the
+	// case view cannot disagree about whether a mandate exists.
+	HasMandate bool `json:"has_mandate"`
 }
 
 // AuditEntry is one row of audit_log.
@@ -88,6 +94,20 @@ func scanCase(row pgx.Row) (Case, error) {
 	err := row.Scan(&c.ID, &c.PayPalDisputeID, &c.Reason, &c.RawReason, &c.ReasonSupported,
 		&c.Stage, &c.Status, &c.PayPalStatus, &c.Amount, &c.Currency, &c.RespondBy,
 		&c.BuyerName, &c.BuyerEmail, &c.ProductName, &c.TransactionID, &c.CreatedAt, &c.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Case{}, ErrNotFound
+	}
+	return c, err
+}
+
+// scanListedCase reads a row from ListCases, which carries the mandate flag
+// after the shared columns.
+func scanListedCase(row pgx.Row) (Case, error) {
+	var c Case
+	err := row.Scan(&c.ID, &c.PayPalDisputeID, &c.Reason, &c.RawReason, &c.ReasonSupported,
+		&c.Stage, &c.Status, &c.PayPalStatus, &c.Amount, &c.Currency, &c.RespondBy,
+		&c.BuyerName, &c.BuyerEmail, &c.ProductName, &c.TransactionID, &c.CreatedAt,
+		&c.UpdatedAt, &c.HasMandate)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Case{}, ErrNotFound
 	}
@@ -189,7 +209,9 @@ func (s *Store) ListCases(ctx context.Context, limit int) ([]Case, error) {
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT `+caseColumns+` FROM cases
+		`SELECT `+caseColumns+`,
+		        EXISTS (SELECT 1 FROM mandates m WHERE m.order_id = transaction_id) AS has_mandate
+		 FROM cases
 		 ORDER BY respond_by ASC NULLS LAST, created_at DESC
 		 LIMIT $1`, limit)
 	if err != nil {
@@ -199,7 +221,7 @@ func (s *Store) ListCases(ctx context.Context, limit int) ([]Case, error) {
 
 	cases := make([]Case, 0, limit)
 	for rows.Next() {
-		c, err := scanCase(rows)
+		c, err := scanListedCase(rows)
 		if err != nil {
 			return nil, err
 		}

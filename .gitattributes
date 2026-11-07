@@ -1,5 +1,7 @@
-# Shell scripts run inside Linux containers (and in CI), so they must keep LF
-# endings whatever core.autocrlf says on the machine that cloned the repo. With
-# CRLF, bash reads `set -euo pipefail\r` as an invalid option name and exits 2,
-# which silently leaves the Redpanda topics uncreated.
-*.sh text eol=lf
+# Keep every text file LF in the working tree, whatever core.autocrlf is set to
+# on the machine that cloned the repo. These sources are consumed inside Linux
+# containers and by CI, and a CRLF checkout breaks them in ways that look like
+# code faults: bash reads `set -euo pipefail\r` as an invalid option and exits
+# 2, leaving the Redpanda topics uncreated, and `gofmt -l` flags every Go file
+# so `task lint` fails on a clean tree.
+* text=auto eol=lf

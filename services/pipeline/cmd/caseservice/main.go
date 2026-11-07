@@ -194,6 +194,11 @@ func newRouter(db *store.Store) http.Handler {
 			verified = append(verified, entry)
 		}
 
+		// The list endpoint computes this flag in SQL; here the mandates are
+		// already in hand, so set it from them rather than leaving the detail
+		// payload claiming there is none.
+		c.HasMandate = len(mandates) > 0
+
 		writeJSON(w, http.StatusOK, map[string]any{
 			"case":     c,
 			"timeline": timeline,
