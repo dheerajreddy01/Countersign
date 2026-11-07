@@ -126,7 +126,13 @@ jobs:
           done
           curl -fsS http://localhost:3000/ >/dev/null
           curl -fsS http://localhost:3000/api/cases >/dev/null
-          curl -fsS http://localhost:3000/cases/1001 | grep -q "Fight the dispute"
+          curl -fsS http://localhost:3000/cases >/dev/null
+          # Assert on the case's own data, not on banner copy: this step used to
+          # grep for "Fight the dispute" and broke when the wording changed,
+          # which says nothing about whether the image serves a case.
+          curl -fsS http://localhost:3000/cases/1001 | grep -q "PP-D-1001"
+          curl -fsS http://localhost:3000/cases/1001 | grep -q "Jordan Mercer"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/cases/nope)" = 404
       - name: Container logs on failure
         if: failure()
         run: docker logs web || true
