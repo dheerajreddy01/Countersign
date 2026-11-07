@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isLive, LIVE_READ_ONLY_MESSAGE } from "@/lib/data";
 import { applyAction, getCase } from "@/lib/store";
 import type { ActionKind } from "@/lib/types";
 
@@ -19,6 +20,13 @@ export async function POST(
   req: Request,
   { params }: { params: { id: string } },
 ) {
+  if (isLive()) {
+    return NextResponse.json(
+      { error: LIVE_READ_ONLY_MESSAGE },
+      { status: 501 },
+    );
+  }
+
   let body: unknown;
   try {
     body = await req.json();

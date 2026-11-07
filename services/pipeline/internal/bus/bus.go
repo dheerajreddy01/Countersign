@@ -20,7 +20,14 @@ import (
 	"time"
 )
 
-const contentType = "application/vnd.kafka.json.v2+json"
+// pandaproxy wants the embedded format (…json.v2+json) only on the record
+// paths: producing and fetching. Consumer management — creating an instance,
+// subscribing, committing offsets, deleting — takes the plain …v2+json type,
+// and the embedded form there is rejected with 415 Unsupported Media Type.
+const (
+	recordsContentType  = "application/vnd.kafka.json.v2+json"
+	consumerContentType = "application/vnd.kafka.v2+json"
+)
 
 // Topics carried by the pipeline. These are the names created by
 // infra/redpanda/create-topics.sh.
@@ -64,7 +71,7 @@ func (p *Publisher) Publish(ctx context.Context, topic, key string, value []byte
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Content-Type", recordsContentType)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -120,7 +127,7 @@ func NewConsumer(ctx context.Context, baseURL, group string, topics []string) (*
 		"auto.commit.enable": "false",
 	}
 	endpoint := fmt.Sprintf("%s/consumers/%s", c.baseURL, url.PathEscape(group))
-	if err := c.do(ctx, http.MethodPost, endpoint, body, &created); err != nil {
+	if err := c.do(ctx, http.MethodPost, endpoint, body, &created, consumerContentType); err != nil {
 		return nil, fmt.Errorf("create consumer in group %s: %w", group, err)
 	}
 	if created.InstanceID == "" {
@@ -132,7 +139,7 @@ func NewConsumer(ctx context.Context, baseURL, group string, topics []string) (*
 	// proxy's own base_uri: the proxy advertises a hostname that need not be
 	// reachable from inside the compose network.
 	if err := c.do(ctx, http.MethodPost, c.instanceURL()+"/subscription",
-		map[string]any{"topics": topics}, nil); err != nil {
+		map[string]any{"topics": topics}, nil, consumerContentType); err != nil {
 		return nil, fmt.Errorf("subscribe to %v: %w", topics, err)
 	}
 	return c, nil
@@ -148,7 +155,7 @@ func (c *Consumer) instanceURL() string {
 func (c *Consumer) Poll(ctx context.Context, wait time.Duration) ([]Record, error) {
 	endpoint := fmt.Sprintf("%s/records?timeout=%d", c.instanceURL(), wait.Milliseconds())
 	var records []Record
-	if err := c.do(ctx, http.MethodGet, endpoint, nil, &records); err != nil {
+	if err := c.do(ctx, http.MethodGet, endpoint, nil, &records, recordsContentType); err != nil {
 		return nil, err
 	}
 	return records, nil
@@ -161,7 +168,7 @@ func (c *Consumer) Commit(ctx context.Context, rec Record) error {
 			{"topic": rec.Topic, "partition": rec.Partition, "offset": rec.Offset + 1},
 		},
 	}
-	return c.do(ctx, http.MethodPost, c.instanceURL()+"/offsets", body, nil)
+	return c.do(ctx, http.MethodPost, c.instanceURL()+"/offsets", body, nil, consumerContentType)
 }
 
 // Close removes the consumer instance so the group rebalances promptly instead
@@ -170,12 +177,12 @@ func (c *Consumer) Close(ctx context.Context) error {
 	if c.instance == "" {
 		return nil
 	}
-	err := c.do(ctx, http.MethodDelete, c.instanceURL(), nil, nil)
+	err := c.do(ctx, http.MethodDelete, c.instanceURL(), nil, nil, consumerContentType)
 	c.instance = ""
 	return err
 }
 
-func (c *Consumer) do(ctx context.Context, method, endpoint string, body, out any) error {
+func (c *Consumer) do(ctx context.Context, method, endpoint string, body, out any, mediaType string) error {
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -189,9 +196,9 @@ func (c *Consumer) do(ctx context.Context, method, endpoint string, body, out an
 		return err
 	}
 	if body != nil {
-		req.Header.Set("Content-Type", contentType)
+		req.Header.Set("Content-Type", mediaType)
 	}
-	req.Header.Set("Accept", contentType)
+	req.Header.Set("Accept", mediaType)
 
 	resp, err := c.client.Do(req)
 	if err != nil {

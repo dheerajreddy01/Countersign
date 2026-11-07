@@ -117,10 +117,12 @@ services:
     environment:
       # Proxy the score endpoint to the AI service on the compose network.
       AI_SERVICE_URL: http://ai:8000
-      # Unset: the console serves its built-in demo fixtures.
-      CONSOLE_API_URL: ""
+      # Read cases from the pipeline's case service. Set this to "" to serve
+      # the console's built-in demo fixtures instead.
+      CONSOLE_API_URL: http://caseservice:8081
     depends_on:
       - ai
+      - caseservice
     ports:
       - "3000:3000"
 

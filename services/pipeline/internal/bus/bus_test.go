@@ -31,17 +31,38 @@ type fakeProxy struct {
 	pollFailures int // fail this many polls before serving records
 }
 
+// wrongMediaType mimics pandaproxy's 415: the consumer-management paths take
+// the plain v2 type and the record paths take the embedded one. Without this
+// check the fake accepts anything and a wrong Content-Type only shows up
+// against a real broker.
+func wrongMediaType(t *testing.T, w http.ResponseWriter, r *http.Request, header, want string) bool {
+	t.Helper()
+	if got := r.Header.Get(header); got != want {
+		t.Errorf("%s %s: %s = %q, want %q", r.Method, r.URL.Path, header, got, want)
+		http.Error(w, `{"error_code":415,"message":"unsupported_media_type"}`,
+			http.StatusUnsupportedMediaType)
+		return true
+	}
+	return false
+}
+
 func (f *fakeProxy) server(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /consumers/{group}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", contentType)
+		if wrongMediaType(t, w, r, "Content-Type", consumerContentType) {
+			return
+		}
+		w.Header().Set("Content-Type", consumerContentType)
 		_, _ = w.Write([]byte(`{"instance_id":"inst-1","base_uri":"http://unreachable.invalid/x"}`))
 	})
 
 	mux.HandleFunc("POST /consumers/{group}/instances/{id}/subscription",
 		func(w http.ResponseWriter, r *http.Request) {
+			if wrongMediaType(t, w, r, "Content-Type", consumerContentType) {
+				return
+			}
 			var body struct{ Topics []string }
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			f.mu.Lock()
@@ -52,6 +73,9 @@ func (f *fakeProxy) server(t *testing.T) *httptest.Server {
 
 	mux.HandleFunc("GET /consumers/{group}/instances/{id}/records",
 		func(w http.ResponseWriter, r *http.Request) {
+			if wrongMediaType(t, w, r, "Accept", recordsContentType) {
+				return
+			}
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			if f.pollFailures > 0 {
@@ -65,12 +89,15 @@ func (f *fakeProxy) server(t *testing.T) *httptest.Server {
 			} else {
 				batch = []Record{}
 			}
-			w.Header().Set("Content-Type", contentType)
+			w.Header().Set("Content-Type", recordsContentType)
 			_ = json.NewEncoder(w).Encode(batch)
 		})
 
 	mux.HandleFunc("POST /consumers/{group}/instances/{id}/offsets",
 		func(w http.ResponseWriter, r *http.Request) {
+			if wrongMediaType(t, w, r, "Content-Type", consumerContentType) {
+				return
+			}
 			var body struct {
 				Partitions []struct{ Offset int64 } `json:"partitions"`
 			}
@@ -92,6 +119,9 @@ func (f *fakeProxy) server(t *testing.T) *httptest.Server {
 		})
 
 	mux.HandleFunc("POST /topics/{topic}", func(w http.ResponseWriter, r *http.Request) {
+		if wrongMediaType(t, w, r, "Content-Type", recordsContentType) {
+			return
+		}
 		raw, _ := io.ReadAll(r.Body)
 		var body struct {
 			Records []struct {

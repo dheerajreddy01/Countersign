@@ -1,14 +1,15 @@
+import Link from "next/link";
 import { CaseTable } from "@/components/CaseTable";
 import { DeadlineBoard } from "@/components/DeadlineBoard";
 import { StatStrip, type Stat } from "@/components/StatStrip";
 import { formatMoney } from "@/lib/format";
-import { listCases } from "@/lib/store";
+import { loadSummaries } from "@/lib/data";
 
 // Read the live store on every request so approvals/edits are reflected.
 export const dynamic = "force-dynamic";
 
-export default function DashboardPage() {
-  const cases = listCases();
+export default async function DashboardPage() {
+  const cases = await loadSummaries();
   const now = Date.now();
 
   const openCases = cases.filter(
@@ -62,7 +63,15 @@ export default function DashboardPage() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-slate-800">All cases</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-slate-800">All cases</h2>
+          <Link
+            href="/cases"
+            className="text-xs font-medium text-indigo-600 hover:text-indigo-800"
+          >
+            Open the case list →
+          </Link>
+        </div>
         <CaseTable cases={cases} />
       </section>
     </div>

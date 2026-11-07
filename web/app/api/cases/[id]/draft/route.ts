@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isLive, LIVE_READ_ONLY_MESSAGE } from "@/lib/data";
 import { updateDraftText } from "@/lib/store";
 
 // PUT /api/cases/:id/draft — save an edited draft. The store re-runs the
@@ -9,6 +10,13 @@ export async function PUT(
   req: Request,
   { params }: { params: { id: string } },
 ) {
+  if (isLive()) {
+    return NextResponse.json(
+      { error: LIVE_READ_ONLY_MESSAGE },
+      { status: 501 },
+    );
+  }
+
   let body: unknown;
   try {
     body = await req.json();

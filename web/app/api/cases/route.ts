@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
-import { listCases } from "@/lib/store";
+import { loadSummaries } from "@/lib/data";
 
-// GET /api/cases — case summaries for the board and table.
-// When CONSOLE_API_URL is set, a deployment would forward here to the Go
-// console API instead of reading the in-memory demo store.
+// GET /api/cases — case summaries for the board and table. Reads the Go
+// console API when CONSOLE_API_URL is set, the demo store otherwise.
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return NextResponse.json({ cases: listCases() });
+  return NextResponse.json({ cases: await loadSummaries() });
 }
