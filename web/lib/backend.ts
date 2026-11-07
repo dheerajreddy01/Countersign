@@ -105,10 +105,20 @@ interface ApiMandateEntry {
   verification_error?: string;
 }
 
-/** The configured base URL, or null when the console serves its own fixtures. */
+/**
+ * The configured base URL, or null when the console serves its own fixtures.
+ *
+ * CONSOLE_API_HOSTPORT is accepted as well because a platform that assigns
+ * internal hostnames at deploy time can inject "host:port" from its service
+ * registry but cannot interpolate it into a URL (Render's fromService gives
+ * hostport, and Blueprints have no string interpolation).
+ */
 export function backendURL(): string | null {
-  const raw = process.env.CONSOLE_API_URL?.trim();
-  return raw ? raw.replace(/\/+$/, "") : null;
+  const url = process.env.CONSOLE_API_URL?.trim();
+  if (url) return url.replace(/\/+$/, "");
+  const hostport = process.env.CONSOLE_API_HOSTPORT?.trim();
+  if (hostport) return `http://${hostport.replace(/\/+$/, "")}`;
+  return null;
 }
 
 function oneOf<T extends string>(value: string, allowed: readonly T[], fallback: T): T {

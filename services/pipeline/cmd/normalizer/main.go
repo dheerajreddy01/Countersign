@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -35,7 +36,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	proxyURL := getenv("REDPANDA_PROXY_URL", "http://redpanda:8082")
+	proxyURL := bus.ProxyURLFromEnv("http://redpanda:8082")
+	addr := getenv("NORMALIZER_ADDR", ":8084")
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		log.Fatal("DATABASE_URL is required")
@@ -46,6 +48,26 @@ func main() {
 		log.Fatalf("postgres: %v", err)
 	}
 	defer db.Close()
+
+	// A health endpoint, because this service is otherwise invisible: it opens
+	// no port, so an orchestrator cannot tell a normalizer that is consuming
+	// from one that is crash-looping.
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           healthRouter(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		log.Printf("%s health endpoint listening on %s", consumerName, addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("http server: %v", err)
+		}
+	}()
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), closeTimeout)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
 
 	publisher := bus.NewPublisher(proxyURL)
 	consumer, err := bus.NewConsumer(ctx, proxyURL, consumerName+"-group", []string{bus.TopicWebhooksRaw})
@@ -67,6 +89,15 @@ func main() {
 		log.Fatalf("%s stopped: %v", consumerName, err)
 	}
 	log.Printf("%s stopped", consumerName)
+}
+
+func healthRouter() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	return mux
 }
 
 func handler(db *store.Store, publisher *bus.Publisher) bus.Handler {

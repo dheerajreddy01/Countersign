@@ -37,7 +37,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	proxyURL := getenv("REDPANDA_PROXY_URL", "http://redpanda:8082")
+	proxyURL := bus.ProxyURLFromEnv("http://redpanda:8082")
 	addr := getenv("CASE_SERVICE_ADDR", ":8081")
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {

@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -315,4 +316,22 @@ func sleep(ctx context.Context, d time.Duration) bool {
 	case <-t.C:
 		return true
 	}
+}
+
+// ProxyURLFromEnv resolves the pandaproxy base URL.
+//
+// REDPANDA_PROXY_URL wins when set. Otherwise REDPANDA_PROXY_HOSTPORT is
+// accepted, because a platform that assigns internal hostnames at deploy time
+// can inject "host:port" from its own service registry but cannot interpolate
+// it into a URL (Render's fromService gives hostport; its Blueprints have no
+// string interpolation). Without this the deployment has to be hand-edited
+// after every create.
+func ProxyURLFromEnv(fallback string) string {
+	if url := strings.TrimSpace(os.Getenv("REDPANDA_PROXY_URL")); url != "" {
+		return url
+	}
+	if hostport := strings.TrimSpace(os.Getenv("REDPANDA_PROXY_HOSTPORT")); hostport != "" {
+		return "http://" + hostport
+	}
+	return fallback
 }

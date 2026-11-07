@@ -60,12 +60,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
-      # A service container does not run the files in infra/postgres/init the
+      # A service container does not run the files in infra/postgres/migrations the
       # way the compose volume mount does, so apply them in order here. This
       # also checks the migrations themselves actually apply.
       - name: Apply the schema
         run: |
-          for file in infra/postgres/init/*.sql; do
+          for file in infra/postgres/migrations/*.sql; do
             echo "applying $file"
             psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$file"
           done
@@ -147,3 +147,17 @@ jobs:
       - run: cp .env.example .env
       - run: docker compose config --quiet
       - run: bash -n infra/redpanda/create-topics.sh
+      - run: bash -n infra/postgres/migrate.sh
+
+  blueprint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml jsonschema
+      # Validates render.yaml against Render's published schema, and checks
+      # that every fromService/fromDatabase names something the file defines
+      # and every build path still exists.
+      - run: python scripts/check-blueprint.py

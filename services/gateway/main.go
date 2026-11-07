@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -62,13 +63,26 @@ type config struct {
 func configFromEnv() config {
 	return config{
 		addr:             getenv("GATEWAY_ADDR", ":8080"),
-		proxyURL:         getenv("REDPANDA_PROXY_URL", "http://localhost:18082"),
+		proxyURL:         proxyURLFromEnv("http://localhost:18082"),
 		skipVerification: os.Getenv("GATEWAY_SKIP_SIGNATURE_VERIFY") == "true",
 		apiBase:          getenv("PAYPAL_API_BASE", "https://api-m.sandbox.paypal.com"),
 		clientID:         os.Getenv("PAYPAL_CLIENT_ID"),
 		clientSecret:     os.Getenv("PAYPAL_CLIENT_SECRET"),
 		webhookID:        os.Getenv("PAYPAL_WEBHOOK_ID"),
 	}
+}
+
+// proxyURLFromEnv mirrors bus.ProxyURLFromEnv in the pipeline module: a
+// platform that assigns internal hostnames at deploy time can inject
+// "host:port" but cannot interpolate it into a URL, so accept either form.
+func proxyURLFromEnv(fallback string) string {
+	if url := strings.TrimSpace(os.Getenv("REDPANDA_PROXY_URL")); url != "" {
+		return url
+	}
+	if hostport := strings.TrimSpace(os.Getenv("REDPANDA_PROXY_HOSTPORT")); hostport != "" {
+		return "http://" + hostport
+	}
+	return fallback
 }
 
 func getenv(key, fallback string) string {

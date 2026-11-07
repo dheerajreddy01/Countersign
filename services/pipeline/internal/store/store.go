@@ -1,6 +1,6 @@
 // Package store is the pipeline's Postgres access layer.
 //
-// Tables are defined in infra/postgres/init. Every write that changes a case
+// Tables are defined in infra/postgres/migrations. Every write that changes a case
 // also appends to audit_log in the same transaction, so the trail cannot
 // disagree with the row it describes.
 package store

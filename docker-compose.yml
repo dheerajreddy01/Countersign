@@ -11,7 +11,11 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+      # The migration files double as the first-run scripts: Postgres applies
+      # everything here in order on a fresh volume, which is exactly what a
+      # new dev database needs. infra/postgres/migrate.sh applies the same
+      # files to a database that already exists.
+      - ./infra/postgres/migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-countersign}"]
       interval: 5s
@@ -64,22 +68,25 @@ services:
   normalizer:
     build:
       context: ./services/pipeline
-      args:
-        CMD: normalizer
+    # The image carries every binary; pick one.
+    command: ["/normalizer"]
     env_file: [.env]
     environment:
       REDPANDA_PROXY_URL: http://redpanda:8082
+      NORMALIZER_ADDR: ":8084"
     depends_on:
       postgres:
         condition: service_healthy
       redpanda-init:
         condition: service_completed_successfully
+    ports:
+      - "8084:8084"
 
   caseservice:
     build:
       context: ./services/pipeline
-      args:
-        CMD: caseservice
+    # The image carries every binary; pick one.
+    command: ["/caseservice"]
     env_file: [.env]
     environment:
       REDPANDA_PROXY_URL: http://redpanda:8082
@@ -95,8 +102,8 @@ services:
   mandate:
     build:
       context: ./services/pipeline
-      args:
-        CMD: mandate
+    # The image carries every binary; pick one.
+    command: ["/mandate"]
     env_file: [.env]
     environment:
       MANDATE_SERVICE_ADDR: ":8082"

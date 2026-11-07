@@ -3,7 +3,7 @@
 // Integration tests for the Postgres layer. They need a real database, so they
 // are behind the `integration` build tag and skip unless TEST_DATABASE_URL is
 // set. CI runs them against a postgres service container with the files from
-// infra/postgres/init already applied:
+// infra/postgres/migrations already applied:
 //
 //	go test -tags integration ./internal/store/
 package store

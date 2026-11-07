@@ -36,7 +36,7 @@ switch it onto the real backend (see `.env.example`):
 | `CONSOLE_API_URL` | Point the case endpoints at the Go console API instead of the demo store. |
 | `AI_SERVICE_URL` | `POST /api/score` proxies to the Python AI service (`services/ai`); unset, it uses a local mirror of the same decision rule. |
 
-The shapes in `lib/types.ts` mirror `infra/postgres/init/001_schema.sql` and the
+The shapes in `lib/types.ts` mirror `infra/postgres/migrations/001_schema.sql` and the
 AI service contract in `services/ai/app/main.py`.
 
 ## The parity guard

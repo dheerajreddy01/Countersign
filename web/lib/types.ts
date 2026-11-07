@@ -1,5 +1,5 @@
 // Shapes the merchant console renders. They mirror the Postgres schema in
-// infra/postgres/init/001_schema.sql and the AI service contract in
+// infra/postgres/migrations/001_schema.sql and the AI service contract in
 // services/ai/app/main.py, flattened into the per-case view the UI needs.
 
 export type DisputeReason =
