@@ -79,6 +79,13 @@ fight if  P(win) × amount − cost_to_fight  >  refund_cost
 
 The drafter may only state facts that cite a stored evidence record. Any sentence without a citation is rejected before the merchant sees the draft. This is meant to prevent invented evidence, and the demo shows it rejecting a made-up sentence.
 
+## Drafting
+
+Two drafters sit behind `POST /draft`, with the grounding guard as the hard gate over both:
+
+- **Template (default).** A deterministic, grounded-by-construction drafter: for each dispute category it emits a claim sentence only when evidence of the matching type is present, citing that record. It needs no API key and is what the service uses out of the box.
+- **Groq LLM (opt-in).** Set `GROQ_API_KEY` (and optionally `GROQ_MODEL`) and the LLM writes the rebuttal from the case's reason and evidence. Its output is run through the grounding guard; a draft with any uncited factual sentence is retried once with the offending sentences fed back, and if it still fails — or the key is missing, or the call errors — the service falls back to the template drafter. The response's `source` field reports `groq` or `template`. The LLM can improve the prose but can never weaken the guarantee that nothing reaches PayPal uncited.
+
 ## Merchant console
 
 Next.js console with an approve/edit flow and a Bryntum Scheduler board of dispute deadlines. Bryntum is a commercial library, so a licence or trial is needed.
