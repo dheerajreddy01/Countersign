@@ -21,6 +21,16 @@
 #   2. apply the schema with infra/postgres/migrate.sh
 #   3. re-register the PayPal webhook at the gateway's new URL
 
+# A generated shared secret the console presents to the case service on the
+# money-moving action endpoint, so that endpoint is not callable by anything
+# else that can reach it on the private network. Generated once and injected
+# into both services, so there is nothing to paste and the two always agree.
+envVarGroups:
+  - name: countersign-secrets
+    envVars:
+      - key: INTERNAL_API_TOKEN
+        generateValue: true
+
 databases:
   - name: countersign-postgres
     plan: 0.1c-256mb
@@ -107,6 +117,7 @@ services:
     dockerContext: ./web
     healthCheckPath: /healthz
     envVars:
+      - fromGroup: countersign-secrets
       - key: CONSOLE_API_HOSTPORT
         fromService:
           type: pserv
@@ -212,6 +223,7 @@ services:
     dockerContext: ./services/pipeline
     dockerCommand: /caseservice
     envVars:
+      - fromGroup: countersign-secrets
       - key: CASE_SERVICE_ADDR
         value: ":8081"
       - key: DATABASE_URL

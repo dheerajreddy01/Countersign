@@ -465,9 +465,15 @@ export async function postAction(
 ): Promise<{ ok: boolean; status: number; body: unknown }> {
   const base = backendURL();
   if (!base) throw new Error("CONSOLE_API_URL is not set");
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  // Service-to-service auth for the money-moving write path: when the case
+  // service is configured with INTERNAL_API_TOKEN, it requires this header, so
+  // only the console (which shares the secret) can submit actions.
+  const token = process.env.INTERNAL_API_TOKEN?.trim();
+  if (token) headers["x-internal-token"] = token;
   const res = await fetch(`${base}/cases/${id}/actions`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers,
     body: JSON.stringify({ kind, note }),
     cache: "no-store",
   });

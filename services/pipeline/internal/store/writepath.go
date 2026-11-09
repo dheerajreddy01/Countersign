@@ -326,36 +326,71 @@ type Outcome struct {
 	CreatedAt time.Time       `json:"created_at"`
 }
 
-// InsertOutcome records an outcome and appends to the audit trail in one
-// transaction.
-func (s *Store) InsertOutcome(ctx context.Context, caseID int64, result string, payload json.RawMessage) (Outcome, error) {
+// OutcomeInput describes one outcome to record. EventKey, when set, makes the
+// write idempotent: a second outcome carrying the same key is a no-op. Status,
+// when set, is the case lifecycle status to advance to in the same transaction.
+type OutcomeInput struct {
+	CaseID     int64
+	Result     string
+	Status     string
+	EventKey   string
+	Payload    json.RawMessage
+	AuditEvent string
+}
+
+// RecordOutcome inserts an outcome, advances the case status, and appends to the
+// audit trail — all in one transaction, so a crash can never leave the outcome
+// recorded but the status un-advanced. It returns false when EventKey was
+// already recorded, in which case nothing is written: redelivery of a
+// cs.outcomes record is a no-op rather than a second ruling.
+func (s *Store) RecordOutcome(ctx context.Context, in OutcomeInput) (bool, error) {
+	payload := in.Payload
 	if len(payload) == 0 {
 		payload = json.RawMessage("null")
 	}
+	var eventKey any
+	if in.EventKey != "" {
+		eventKey = in.EventKey
+	}
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return Outcome{}, err
+		return false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var o Outcome
-	o.CaseID = caseID
-	o.Result = result
-	err = tx.QueryRow(ctx,
-		`INSERT INTO outcomes (case_id, result, payload) VALUES ($1, $2, $3)
-		 RETURNING id, created_at`,
-		caseID, result, []byte(payload)).Scan(&o.ID, &o.CreatedAt)
+	tag, err := tx.Exec(ctx,
+		`INSERT INTO outcomes (case_id, result, payload, event_key)
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (event_key) DO NOTHING`,
+		in.CaseID, in.Result, []byte(payload), eventKey)
 	if err != nil {
-		return Outcome{}, fmt.Errorf("insert outcome for case %d: %w", caseID, err)
+		return false, fmt.Errorf("insert outcome for case %d: %w", in.CaseID, err)
 	}
-	o.Payload = payload
-	if err := appendAudit(ctx, tx, &caseID, "outcome-capture", "Outcome recorded: "+result, []byte(payload)); err != nil {
-		return Outcome{}, err
+	if tag.RowsAffected() == 0 {
+		// Already recorded under this event key. Do not re-advance the status or
+		// re-audit: the first delivery already did.
+		return false, nil
+	}
+
+	if in.Status != "" {
+		if _, err := tx.Exec(ctx,
+			`UPDATE cases SET status = $2, updated_at = now() WHERE id = $1`,
+			in.CaseID, in.Status); err != nil {
+			return false, fmt.Errorf("advance case %d to %s: %w", in.CaseID, in.Status, err)
+		}
+	}
+	event := in.AuditEvent
+	if event == "" {
+		event = "Outcome recorded: " + in.Result
+	}
+	if err := appendAudit(ctx, tx, &in.CaseID, "outcome-capture", event, []byte(payload)); err != nil {
+		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return Outcome{}, err
+		return false, err
 	}
-	return o, nil
+	return true, nil
 }
 
 // OutcomesForCase returns a case's outcomes, newest first.

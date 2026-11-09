@@ -43,6 +43,11 @@ repository, and Render reads `render.yaml`. It will prompt for the values marked
 | `MANDATE_SIGNING_KEY` | generate it, see below |
 | `CONSOLE_PASSWORD` | choose one; the username defaults to `merchant` |
 
+`INTERNAL_API_TOKEN` is not in that list: it is a shared secret the console
+presents to the case service on the action endpoint, and the Blueprint generates
+it once (`envVarGroups`) and injects it into both services, so there is nothing
+to paste and the two always agree.
+
 The gateway **refuses to start** without the three `PAYPAL_*` values, which is
 deliberate: a gateway that cannot verify a signature would reject every
 delivery, and discovering that from the first rejected dispute is worse than

@@ -46,7 +46,6 @@ type config struct {
 	simulate     bool
 	simulateRule bool
 	ruling       string
-	rulingDelay  time.Duration
 	evidenceType string
 }
 
@@ -154,6 +153,18 @@ func handler(db *store.Store, pp *paypal.Client, publisher *bus.Publisher, cfg c
 			return fmt.Errorf("unknown action kind %q", req.Kind)
 		}
 
+		// Redelivery guard: a PayPal action is not idempotent, so a record
+		// redelivered after a crash (or a failed offset commit) must not re-run
+		// the real call — a second accept_claim refunds the buyer again. The
+		// console marks the action 'requested'; once this executor has run it,
+		// the row is 'executed' or 'failed', and seeing either means the work is
+		// already done.
+		if existing, err := db.GetAction(ctx, req.IdempotencyKey); err == nil &&
+			(existing.Status == "executed" || existing.Status == "failed") {
+			log.Printf("%s: action %s already %s, skipping redelivery", consumerName, req.IdempotencyKey, existing.Status)
+			return nil
+		}
+
 		// The text that actually goes to PayPal is the approved draft, falling
 		// back to the merchant's note when there is no draft (e.g. accept_claim).
 		text := req.Note
@@ -175,10 +186,12 @@ func handler(db *store.Store, pp *paypal.Client, publisher *bus.Publisher, cfg c
 			return nil
 		}
 
+		// Persist only the dispute status, not PayPal's full response body: that
+		// body embeds buyer PII (name, email, dispute internals) and the action
+		// detail is served back to the console. The full response is not kept.
 		detail, _ := json.Marshal(map[string]any{
 			"simulated":      simulate,
 			"dispute_status": result.DisputeStatus,
-			"paypal":         result.Raw,
 		})
 		if err := db.UpdateActionResult(ctx, req.IdempotencyKey, "executed", detail); err != nil {
 			return err
@@ -190,17 +203,16 @@ func handler(db *store.Store, pp *paypal.Client, publisher *bus.Publisher, cfg c
 			consumerName, req.IdempotencyKey, req.Kind, simulate, result.DisputeStatus)
 
 		// The simulated terminal ruling, so the board can reach a final state in
-		// the demo. Always labeled simulated. Skipped for actions that are
-		// already terminal (accept_claim) and when the operator turns it off.
+		// the demo. Always labeled simulated. Skipped for actions that are already
+		// terminal (accept_claim) and when the operator turns it off. Published
+		// inline, not after a timed sleep: sleeping here would hold the offset
+		// commit and head-of-line-block every later action on the partition.
 		if cfg.simulateRule && p.terminal != "" {
 			// A won/lost verdict is the operator's to choose (EXECUTOR_RULING);
 			// a settlement follows from making an offer, so it is not overridden.
 			terminal := p.terminal
 			if terminal == "won" {
 				terminal = cfg.ruling
-			}
-			if !waitFor(ctx, cfg.rulingDelay) {
-				return nil // shutting down; the ruling can be re-driven next boot
 			}
 			if err := publishOutcome(ctx, publisher, req, terminal, true,
 				map[string]any{"note": "simulated adjudication for the demo; a real sandbox ruling can take days"}); err != nil {
@@ -240,6 +252,9 @@ func publishOutcome(ctx context.Context, publisher *bus.Publisher, req actionReq
 		"simulated":       simulated,
 		"action_kind":     req.Kind,
 		"idempotency_key": req.IdempotencyKey,
+		// Unique per (action, result), so the case service can dedupe a
+		// redelivered outcome without re-recording it or re-flipping the status.
+		"event_key": req.IdempotencyKey + ":" + result,
 	}
 	for k, v := range extra {
 		payload[k] = v
@@ -256,23 +271,7 @@ func loadConfig() config {
 		simulate:     boolEnv("EXECUTOR_SIMULATE", false),
 		simulateRule: boolEnv("EXECUTOR_SIMULATE_RULING", true),
 		ruling:       getenv("EXECUTOR_RULING", "won"),
-		rulingDelay:  durationEnv("EXECUTOR_RULING_DELAY", 3*time.Second),
 		evidenceType: getenv("EXECUTOR_EVIDENCE_TYPE", "PROOF_OF_FULFILLMENT"),
-	}
-}
-
-// waitFor sleeps for d, reporting false if ctx was cancelled first.
-func waitFor(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		return ctx.Err() == nil
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
 	}
 }
 
@@ -301,13 +300,4 @@ func boolEnv(key string, fallback bool) bool {
 	default:
 		return false
 	}
-}
-
-func durationEnv(key string, fallback time.Duration) time.Duration {
-	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
-		}
-	}
-	return fallback
 }

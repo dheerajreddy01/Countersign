@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,7 +21,6 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -111,58 +111,63 @@ func handler(db *store.Store, publisher *bus.Publisher) bus.Handler {
 }
 
 func handleDispute(ctx context.Context, db *store.Store, publisher *bus.Publisher, rec bus.Record) error {
-	{
-		var dispute events.Dispute
-		if err := json.Unmarshal(rec.Value, &dispute); err != nil {
-			return err
-		}
-		if dispute.DisputeID == "" {
-			return errors.New("dispute event has no dispute_id")
-		}
+	var dispute events.Dispute
+	if err := json.Unmarshal(rec.Value, &dispute); err != nil {
+		return err
+	}
+	if dispute.DisputeID == "" {
+		return errors.New("dispute event has no dispute_id")
+	}
 
-		c, inserted, err := db.UpsertCase(ctx, dispute)
+	c, inserted, err := db.UpsertCase(ctx, dispute)
+	if err != nil {
+		return err
+	}
+
+	// Ask for evidence only when the case is new. An UPDATED webhook for a
+	// dispute already on the board should not rebuild the evidence bundle
+	// behind the merchant's back while they are reading it.
+	if inserted {
+		request, err := json.Marshal(map[string]any{
+			"case_id":        c.ID,
+			"dispute_id":     c.PayPalDisputeID,
+			"reason":         c.Reason,
+			"transaction_id": c.TransactionID,
+			"requested_at":   time.Now().UTC(),
+		})
 		if err != nil {
 			return err
 		}
-
-		// Ask for evidence only when the case is new. An UPDATED webhook for a
-		// dispute already on the board should not rebuild the evidence bundle
-		// behind the merchant's back while they are reading it.
-		if inserted {
-			request, err := json.Marshal(map[string]any{
-				"case_id":        c.ID,
-				"dispute_id":     c.PayPalDisputeID,
-				"reason":         c.Reason,
-				"transaction_id": c.TransactionID,
-				"requested_at":   time.Now().UTC(),
-			})
-			if err != nil {
-				return err
-			}
-			if err := publisher.Publish(ctx, bus.TopicEvidenceRequested, c.PayPalDisputeID, request); err != nil {
-				return err
-			}
+		if err := publisher.Publish(ctx, bus.TopicEvidenceRequested, c.PayPalDisputeID, request); err != nil {
+			return err
 		}
-
-		log.Printf("%s: case %d for dispute %s (inserted=%v)",
-			consumerName, c.ID, c.PayPalDisputeID, inserted)
-		return nil
 	}
+
+	log.Printf("%s: case %d for dispute %s (inserted=%v)",
+		consumerName, c.ID, c.PayPalDisputeID, inserted)
+	return nil
 }
 
 // outcomeEvent is what the executor publishes on cs.outcomes: the ruling or
-// settlement for a case, and whether it is a real PayPal result or a labeled
-// simulation.
+// settlement for a case, whether it is a real PayPal result or a labeled
+// simulation, and the action it came from so the record can be authenticated.
 type outcomeEvent struct {
-	CaseID    int64  `json:"case_id"`
-	DisputeID string `json:"dispute_id"`
-	Result    string `json:"result"`
-	Simulated bool   `json:"simulated"`
+	CaseID         int64  `json:"case_id"`
+	DisputeID      string `json:"dispute_id"`
+	Result         string `json:"result"`
+	Simulated      bool   `json:"simulated"`
+	IdempotencyKey string `json:"idempotency_key"`
+	EventKey       string `json:"event_key"`
 }
 
-// handleOutcome records a ruling and advances the case to its terminal status.
-// The raw event is kept as the outcome payload so the audit trail shows exactly
-// what the executor reported, simulation flag included.
+// handleOutcome records a ruling and advances the case to its terminal status,
+// atomically and idempotently.
+//
+// Two guards matter here. The outcome must reference a real, recorded action on
+// this case (IdempotencyKey), so a spoofed cs.outcomes event cannot drive an
+// arbitrary case to a terminal state. And the write is keyed on the event so a
+// redelivered outcome is a no-op rather than a second ruling and a second status
+// flip.
 func handleOutcome(ctx context.Context, db *store.Store, rec bus.Record) error {
 	var ev outcomeEvent
 	if err := json.Unmarshal(rec.Value, &ev); err != nil {
@@ -184,21 +189,54 @@ func handleOutcome(ctx context.Context, db *store.Store, rec bus.Record) error {
 		caseID = c.ID
 	}
 
-	if _, err := db.InsertOutcome(ctx, caseID, ev.Result, rec.Value); err != nil {
-		return err
+	// Authenticate against a recorded action for this case. A legitimate outcome
+	// always carries the key of an action the executor has already marked
+	// executed; one that references no such action is not trusted.
+	if ev.IdempotencyKey != "" {
+		act, err := db.GetAction(ctx, ev.IdempotencyKey)
+		if errors.Is(err, store.ErrNotFound) || (err == nil && act.CaseID != caseID) {
+			return fmt.Errorf("outcome references no action for case %d (key %q)", caseID, ev.IdempotencyKey)
+		}
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+	}
+
+	eventKey := ev.EventKey
+	if eventKey == "" && ev.IdempotencyKey != "" {
+		eventKey = ev.IdempotencyKey + ":" + ev.Result
 	}
 	status := statusForOutcome(ev.Result)
-	if err := db.SetCaseStatus(ctx, caseID, status, consumerName,
-		"Outcome: "+ev.Result, map[string]any{"result": ev.Result, "simulated": ev.Simulated}); err != nil {
+	inserted, err := db.RecordOutcome(ctx, store.OutcomeInput{
+		CaseID:     caseID,
+		Result:     ev.Result,
+		Status:     status,
+		EventKey:   eventKey,
+		Payload:    rec.Value,
+		AuditEvent: "Outcome: " + ev.Result + simulatedSuffix(ev.Simulated),
+	})
+	if err != nil {
 		return err
+	}
+	if !inserted {
+		log.Printf("%s: outcome %q for case %d already recorded, skipping", consumerName, ev.Result, caseID)
+		return nil
 	}
 	log.Printf("%s: case %d outcome %q (simulated=%v) -> %s", consumerName, caseID, ev.Result, ev.Simulated, status)
 	return nil
 }
 
-// statusForOutcome maps an executor result onto the case lifecycle. An
-// unrecognised result still moves the case off decision_pending to action_taken
-// rather than leaving it looking un-acted-upon.
+func simulatedSuffix(simulated bool) string {
+	if simulated {
+		return " (simulated)"
+	}
+	return ""
+}
+
+// statusForOutcome maps an executor result onto the case lifecycle. A failed
+// submission returns the case to decision_pending so it can be acted on again,
+// rather than looking acted-upon; any other unrecognised result moves it to
+// action_taken rather than leaving it looking untouched.
 func statusForOutcome(result string) string {
 	switch result {
 	case "won":
@@ -209,6 +247,8 @@ func statusForOutcome(result string) string {
 		return "refunded"
 	case "settled":
 		return "settled"
+	case "submit_failed":
+		return "decision_pending"
 	default: // submitted, under_review, acknowledged, ...
 		return "action_taken"
 	}
@@ -303,8 +343,16 @@ func newRouter(db *store.Store, publisher *bus.Publisher) http.Handler {
 			serverError(w, "outcomes", err)
 			return
 		}
-		decision := optionalDecision(r.Context(), db, c.ID, w)
-		draft := optionalDraft(r.Context(), db, c.ID, w)
+		decision, err := optionalDecision(r.Context(), db, c.ID)
+		if err != nil {
+			serverError(w, "decision", err)
+			return
+		}
+		draft, err := optionalDraft(r.Context(), db, c.ID)
+		if err != nil {
+			serverError(w, "draft", err)
+			return
+		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"case":     c,
@@ -321,7 +369,13 @@ func newRouter(db *store.Store, publisher *bus.Publisher) http.Handler {
 	// POST /cases/{id}/actions records a merchant action and hands it to the
 	// executor on cs.action.requested. This is the console's write path: in live
 	// mode the console forwards here instead of refusing with a 501.
-	mux.HandleFunc("POST /cases/{id}/actions", actionHandler(db, publisher))
+	//
+	// When INTERNAL_API_TOKEN is set, the endpoint requires it: the case service
+	// is an internal service that moves money (accept_claim refunds the buyer),
+	// so on a shared network it should not be callable by anything that can reach
+	// its port. Unset, the check is off, which keeps the local demo (compose)
+	// working without a secret.
+	mux.HandleFunc("POST /cases/{id}/actions", actionHandler(db, publisher, getenv("INTERNAL_API_TOKEN", "")))
 
 	return mux
 }
@@ -343,14 +397,23 @@ var needsGrounding = map[string]bool{
 	"send_message":     true,
 }
 
+// actionBody is the request the console posts. It deliberately does not accept
+// an idempotency key: the key is the primary key of the actions table and is
+// not case-scoped, so honouring a client-supplied one would let a caller read
+// back or suppress another case's action by colliding on it. The key is minted
+// server-side instead.
 type actionBody struct {
-	Kind           string `json:"kind"`
-	Note           string `json:"note"`
-	IdempotencyKey string `json:"idempotency_key"`
+	Kind string `json:"kind"`
+	Note string `json:"note"`
 }
 
-func actionHandler(db *store.Store, publisher *bus.Publisher) http.HandlerFunc {
+func actionHandler(db *store.Store, publisher *bus.Publisher, internalToken string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if internalToken != "" && subtleCompare(r.Header.Get("X-Internal-Token"), internalToken) != 1 {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return
+		}
+
 		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id must be an integer"})
@@ -392,10 +455,10 @@ func actionHandler(db *store.Store, publisher *bus.Publisher) http.HandlerFunc {
 			}
 		}
 
-		key := strings.TrimSpace(body.IdempotencyKey)
-		if key == "" {
-			key = newIdempotencyKey()
-		}
+		// Minted server-side, so the key is always unique and the action always
+		// inserts: there is no path where a caller's key collides with an existing
+		// row and the read-back returns a different case's action.
+		key := newIdempotencyKey()
 		inserted, err := db.InsertAction(r.Context(), store.Action{
 			IdempotencyKey: key, CaseID: id, Kind: body.Kind, Note: body.Note,
 		})
@@ -404,8 +467,6 @@ func actionHandler(db *store.Store, publisher *bus.Publisher) http.HandlerFunc {
 			return
 		}
 
-		// Publish to the executor only on first insert. A repeat is a retry of an
-		// action already in flight; re-publishing would ask PayPal to do it twice.
 		if inserted {
 			req, _ := json.Marshal(map[string]any{
 				"idempotency_key": key,
@@ -428,12 +489,14 @@ func actionHandler(db *store.Store, publisher *bus.Publisher) http.HandlerFunc {
 			serverError(w, "read back action", err)
 			return
 		}
-		status := http.StatusAccepted
-		if !inserted {
-			status = http.StatusOK
-		}
-		writeJSON(w, status, map[string]any{"action": action})
+		writeJSON(w, http.StatusAccepted, map[string]any{"action": action})
 	}
+}
+
+// subtleCompare is a constant-time string compare returning 1 on match, so the
+// token check does not leak length or content through timing.
+func subtleCompare(a, b string) int {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b))
 }
 
 // newIdempotencyKey mints a key for an action the console did not supply one
@@ -447,31 +510,33 @@ func newIdempotencyKey() string {
 	return "act-" + hex.EncodeToString(b[:])
 }
 
-// optionalDecision returns the decision as a value or nil, treating "not scored
-// yet" as nil rather than an error. A server error is reported and returns nil.
-func optionalDecision(ctx context.Context, db *store.Store, caseID int64, w http.ResponseWriter) any {
+// optionalDecision returns the decision, or nil when the case has not been
+// scored yet. A real database error is returned so the caller can fail the
+// request with a 500 rather than serving a 200 with a null decision that the
+// console would silently render as the mirror's floor estimate — masking the
+// outage as "not scored yet".
+func optionalDecision(ctx context.Context, db *store.Store, caseID int64) (any, error) {
 	d, err := db.GetDecision(ctx, caseID)
 	if errors.Is(err, store.ErrNotFound) {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		log.Printf("%s: decision for case %d: %v", consumerName, caseID, err)
-		return nil
+		return nil, err
 	}
-	return d
+	return d, nil
 }
 
-// optionalDraft returns the draft as a value or nil when none has been written.
-func optionalDraft(ctx context.Context, db *store.Store, caseID int64, w http.ResponseWriter) any {
+// optionalDraft returns the draft, or nil when none has been written. A real
+// error is returned for the same reason as optionalDecision.
+func optionalDraft(ctx context.Context, db *store.Store, caseID int64) (any, error) {
 	d, err := db.GetDraft(ctx, caseID)
 	if errors.Is(err, store.ErrNotFound) {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		log.Printf("%s: draft for case %d: %v", consumerName, caseID, err)
-		return nil
+		return nil, err
 	}
-	return d
+	return d, nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

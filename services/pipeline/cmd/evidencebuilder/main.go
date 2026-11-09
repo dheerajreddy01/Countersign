@@ -113,30 +113,41 @@ func handler(db *store.Store, ai *aiclient.Client, publisher *bus.Publisher) bus
 			return errors.New("evidence request has no case_id")
 		}
 
-		c, err := db.GetCase(ctx, req.CaseID)
-		if err != nil {
-			return fmt.Errorf("load case %d: %w", req.CaseID, err)
-		}
-
-		var mandates []store.StoredMandate
-		if c.TransactionID != "" {
-			if mandates, err = db.MandatesForOrder(ctx, c.TransactionID); err != nil {
-				return fmt.Errorf("load mandates for %s: %w", c.TransactionID, err)
+		// Assemble the evidence and advance the case to evidence_ready as one
+		// retriable unit. bus.Run dead-letters (and commits) a handler error with
+		// no retry, so a bare error here on a transient DB or proxy blip would
+		// strand the case at 'open' forever. Every step is idempotent — Build is
+		// pure, ReplaceEvidence clears and re-inserts, SetCaseStatus is a plain
+		// update, a duplicate cs.case.ready is harmless — so re-running the whole
+		// block on a transient failure is safe.
+		var c store.Case
+		var records []store.EvidenceRecord
+		var signals evidence.Signals
+		err := retry(ctx, func() error {
+			var err error
+			if c, err = db.GetCase(ctx, req.CaseID); err != nil {
+				return fmt.Errorf("load case %d: %w", req.CaseID, err)
 			}
-		}
-
-		records, signals := evidence.Build(c, mandates, time.Now().UTC())
-		if err := db.ReplaceEvidence(ctx, c.ID, records); err != nil {
-			return err
-		}
-		if err := db.SetCaseStatus(ctx, c.ID, "evidence_ready", consumerName,
-			"Case evidence ready", map[string]any{"evidence_count": len(records)}); err != nil {
-			return err
-		}
-		ready, _ := json.Marshal(map[string]any{
-			"case_id": c.ID, "dispute_id": c.PayPalDisputeID, "evidence_count": len(records),
+			var mandates []store.StoredMandate
+			if c.TransactionID != "" {
+				if mandates, err = db.MandatesForOrder(ctx, c.TransactionID); err != nil {
+					return fmt.Errorf("load mandates for %s: %w", c.TransactionID, err)
+				}
+			}
+			records, signals = evidence.Build(c, mandates, time.Now().UTC())
+			if err = db.ReplaceEvidence(ctx, c.ID, records); err != nil {
+				return err
+			}
+			if err = db.SetCaseStatus(ctx, c.ID, "evidence_ready", consumerName,
+				"Case evidence ready", map[string]any{"evidence_count": len(records)}); err != nil {
+				return err
+			}
+			ready, _ := json.Marshal(map[string]any{
+				"case_id": c.ID, "dispute_id": c.PayPalDisputeID, "evidence_count": len(records),
+			})
+			return publisher.Publish(ctx, bus.TopicCaseReady, c.PayPalDisputeID, ready)
 		})
-		if err := publisher.Publish(ctx, bus.TopicCaseReady, c.PayPalDisputeID, ready); err != nil {
+		if err != nil {
 			return err
 		}
 		log.Printf("%s: case %d evidence assembled (%d records)", consumerName, c.ID, len(records))
@@ -148,14 +159,38 @@ func handler(db *store.Store, ai *aiclient.Client, publisher *bus.Publisher) bus
 		if ai == nil {
 			return nil
 		}
-		if err := scoreAndDraft(ctx, db, ai, publisher, c, signals); err != nil {
+		if err := scoreAndDraft(ctx, db, ai, publisher, c, records, signals); err != nil {
 			log.Printf("%s: case %d scored/drafted partially: %v", consumerName, c.ID, err)
 		}
 		return nil
 	}
 }
 
-func scoreAndDraft(ctx context.Context, db *store.Store, ai *aiclient.Client, publisher *bus.Publisher, c store.Case, sig evidence.Signals) error {
+// retry runs fn up to a few times with a short backoff, giving a transient DB or
+// proxy failure a chance to clear before the record is dead-lettered. It stops
+// early if the context is cancelled.
+func retry(ctx context.Context, fn func() error) error {
+	const attempts = 4
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = fn(); err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return err
+		}
+		if i < attempts-1 {
+			select {
+			case <-ctx.Done():
+				return err
+			case <-time.After(time.Duration(i+1) * 300 * time.Millisecond):
+			}
+		}
+	}
+	return err
+}
+
+func scoreAndDraft(ctx context.Context, db *store.Store, ai *aiclient.Client, publisher *bus.Publisher, c store.Case, records []store.EvidenceRecord, sig evidence.Signals) error {
 	amount, _ := strconv.ParseFloat(c.Amount, 64)
 
 	score, err := ai.Score(ctx, aiclient.ScoreRequest{
@@ -189,10 +224,6 @@ func scoreAndDraft(ctx context.Context, db *store.Store, ai *aiclient.Client, pu
 		return err
 	}
 
-	records, err := db.EvidenceForCase(ctx, c.ID)
-	if err != nil {
-		return err
-	}
 	summaries := evidence.Summaries(records)
 	items := make([]aiclient.Evidence, 0, len(summaries))
 	for _, s := range summaries {

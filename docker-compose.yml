@@ -91,6 +91,9 @@ services:
     environment:
       REDPANDA_PROXY_URL: http://redpanda:8082
       CASE_SERVICE_ADDR: ":8081"
+      # Shared secret the console presents on the action endpoint. Same value on
+      # the web service below. Exercises the service-to-service gate locally.
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-countersign-dev-token}
     depends_on:
       postgres:
         condition: service_healthy
@@ -165,6 +168,8 @@ services:
       # Read cases from the pipeline's case service. Set this to "" to serve
       # the console's built-in demo fixtures instead.
       CONSOLE_API_URL: http://caseservice:8081
+      # Must match the case service's value so the console can submit actions.
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-countersign-dev-token}
     depends_on:
       - ai
       - caseservice
