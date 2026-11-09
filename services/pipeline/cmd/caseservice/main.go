@@ -10,13 +10,17 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -54,7 +58,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           newRouter(db),
+		Handler:           newRouter(db, publisher),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
@@ -69,7 +73,13 @@ func main() {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	consumer, err := bus.NewConsumer(ctx, proxyURL, consumerName+"-group", []string{bus.TopicDisputeEvents})
+	// The case service both opens cases (cs.dispute.events) and closes them
+	// (cs.outcomes). Outcome capture is folded in here rather than being its own
+	// worker: it writes the same cases rows and the same audit trail, and nothing
+	// routes traffic to it, so a separate service would add a consumer group and a
+	// deployment for one INSERT and a status change.
+	consumer, err := bus.NewConsumer(ctx, proxyURL, consumerName+"-group",
+		[]string{bus.TopicDisputeEvents, bus.TopicOutcomes})
 	if err != nil {
 		log.Fatalf("consumer: %v", err)
 	}
@@ -81,7 +91,7 @@ func main() {
 		}
 	}()
 
-	log.Printf("%s consuming %s", consumerName, bus.TopicDisputeEvents)
+	log.Printf("%s consuming %s, %s", consumerName, bus.TopicDisputeEvents, bus.TopicOutcomes)
 	err = bus.Run(ctx, consumer, publisher, consumerName, handler(db, publisher), log.Printf)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatalf("%s stopped: %v", consumerName, err)
@@ -91,6 +101,17 @@ func main() {
 
 func handler(db *store.Store, publisher *bus.Publisher) bus.Handler {
 	return func(ctx context.Context, rec bus.Record) error {
+		switch rec.Topic {
+		case bus.TopicOutcomes:
+			return handleOutcome(ctx, db, rec)
+		default:
+			return handleDispute(ctx, db, publisher, rec)
+		}
+	}
+}
+
+func handleDispute(ctx context.Context, db *store.Store, publisher *bus.Publisher, rec bus.Record) error {
+	{
 		var dispute events.Dispute
 		if err := json.Unmarshal(rec.Value, &dispute); err != nil {
 			return err
@@ -129,9 +150,73 @@ func handler(db *store.Store, publisher *bus.Publisher) bus.Handler {
 	}
 }
 
+// outcomeEvent is what the executor publishes on cs.outcomes: the ruling or
+// settlement for a case, and whether it is a real PayPal result or a labeled
+// simulation.
+type outcomeEvent struct {
+	CaseID    int64  `json:"case_id"`
+	DisputeID string `json:"dispute_id"`
+	Result    string `json:"result"`
+	Simulated bool   `json:"simulated"`
+}
+
+// handleOutcome records a ruling and advances the case to its terminal status.
+// The raw event is kept as the outcome payload so the audit trail shows exactly
+// what the executor reported, simulation flag included.
+func handleOutcome(ctx context.Context, db *store.Store, rec bus.Record) error {
+	var ev outcomeEvent
+	if err := json.Unmarshal(rec.Value, &ev); err != nil {
+		return err
+	}
+	if ev.Result == "" {
+		return errors.New("outcome event has no result")
+	}
+
+	caseID := ev.CaseID
+	if caseID == 0 {
+		if ev.DisputeID == "" {
+			return errors.New("outcome event has neither case_id nor dispute_id")
+		}
+		c, err := db.GetCaseByDisputeID(ctx, ev.DisputeID)
+		if err != nil {
+			return fmt.Errorf("resolve dispute %s: %w", ev.DisputeID, err)
+		}
+		caseID = c.ID
+	}
+
+	if _, err := db.InsertOutcome(ctx, caseID, ev.Result, rec.Value); err != nil {
+		return err
+	}
+	status := statusForOutcome(ev.Result)
+	if err := db.SetCaseStatus(ctx, caseID, status, consumerName,
+		"Outcome: "+ev.Result, map[string]any{"result": ev.Result, "simulated": ev.Simulated}); err != nil {
+		return err
+	}
+	log.Printf("%s: case %d outcome %q (simulated=%v) -> %s", consumerName, caseID, ev.Result, ev.Simulated, status)
+	return nil
+}
+
+// statusForOutcome maps an executor result onto the case lifecycle. An
+// unrecognised result still moves the case off decision_pending to action_taken
+// rather than leaving it looking un-acted-upon.
+func statusForOutcome(result string) string {
+	switch result {
+	case "won":
+		return "won"
+	case "lost":
+		return "lost"
+	case "refunded":
+		return "refunded"
+	case "settled":
+		return "settled"
+	default: // submitted, under_review, acknowledged, ...
+		return "action_taken"
+	}
+}
+
 // --- read API ---------------------------------------------------------------
 
-func newRouter(db *store.Store) http.Handler {
+func newRouter(db *store.Store, publisher *bus.Publisher) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -199,14 +284,194 @@ func newRouter(db *store.Store) http.Handler {
 		// payload claiming there is none.
 		c.HasMandate = len(mandates) > 0
 
+		// The write-path artifacts: the evidence bundle, the decision, the draft,
+		// and any actions and outcomes. Each is returned as it stands — an empty
+		// evidence list and a null draft are the true state of a case the evidence
+		// builder has not reached yet, not something to paper over.
+		evidence, err := db.EvidenceForCase(r.Context(), c.ID)
+		if err != nil {
+			serverError(w, "evidence", err)
+			return
+		}
+		actions, err := db.ActionsForCase(r.Context(), c.ID)
+		if err != nil {
+			serverError(w, "actions", err)
+			return
+		}
+		outcomes, err := db.OutcomesForCase(r.Context(), c.ID)
+		if err != nil {
+			serverError(w, "outcomes", err)
+			return
+		}
+		decision := optionalDecision(r.Context(), db, c.ID, w)
+		draft := optionalDraft(r.Context(), db, c.ID, w)
+
 		writeJSON(w, http.StatusOK, map[string]any{
 			"case":     c,
 			"timeline": timeline,
 			"mandates": verified,
+			"evidence": evidence,
+			"decision": decision,
+			"draft":    draft,
+			"actions":  actions,
+			"outcomes": outcomes,
 		})
 	})
 
+	// POST /cases/{id}/actions records a merchant action and hands it to the
+	// executor on cs.action.requested. This is the console's write path: in live
+	// mode the console forwards here instead of refusing with a 501.
+	mux.HandleFunc("POST /cases/{id}/actions", actionHandler(db, publisher))
+
 	return mux
+}
+
+// validActions are the kinds the executor knows how to carry out.
+var validActions = map[string]bool{
+	"provide_evidence": true,
+	"make_offer":       true,
+	"send_message":     true,
+	"accept_claim":     true,
+}
+
+// needsGrounding are the kinds that put the draft in front of PayPal or the
+// buyer. They are refused until the grounding guard has passed, so an ungrounded
+// sentence cannot be submitted — the same gate the console enforces, enforced
+// again server-side so the UI cannot be the only thing holding the line.
+var needsGrounding = map[string]bool{
+	"provide_evidence": true,
+	"send_message":     true,
+}
+
+type actionBody struct {
+	Kind           string `json:"kind"`
+	Note           string `json:"note"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+func actionHandler(db *store.Store, publisher *bus.Publisher) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id must be an integer"})
+			return
+		}
+
+		var body actionBody
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+			return
+		}
+		if !validActions[body.Kind] {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown action kind"})
+			return
+		}
+
+		c, err := db.GetCase(r.Context(), id)
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "case not found"})
+			return
+		}
+		if err != nil {
+			serverError(w, "get case for action", err)
+			return
+		}
+
+		// The grounding gate: an action that submits the draft needs a draft that
+		// passed the guard. No draft at all is as disqualifying as a failing one.
+		if needsGrounding[body.Kind] {
+			draft, err := db.GetDraft(r.Context(), id)
+			if errors.Is(err, store.ErrNotFound) || (err == nil && !draft.GroundingPassed) {
+				writeJSON(w, http.StatusConflict,
+					map[string]string{"error": "grounding guard must pass before the draft can be sent"})
+				return
+			}
+			if err != nil && !errors.Is(err, store.ErrNotFound) {
+				serverError(w, "get draft for action", err)
+				return
+			}
+		}
+
+		key := strings.TrimSpace(body.IdempotencyKey)
+		if key == "" {
+			key = newIdempotencyKey()
+		}
+		inserted, err := db.InsertAction(r.Context(), store.Action{
+			IdempotencyKey: key, CaseID: id, Kind: body.Kind, Note: body.Note,
+		})
+		if err != nil {
+			serverError(w, "insert action", err)
+			return
+		}
+
+		// Publish to the executor only on first insert. A repeat is a retry of an
+		// action already in flight; re-publishing would ask PayPal to do it twice.
+		if inserted {
+			req, _ := json.Marshal(map[string]any{
+				"idempotency_key": key,
+				"case_id":         c.ID,
+				"dispute_id":      c.PayPalDisputeID,
+				"transaction_id":  c.TransactionID,
+				"kind":            body.Kind,
+				"note":            body.Note,
+				"amount":          c.Amount,
+				"currency":        c.Currency,
+			})
+			if err := publisher.Publish(r.Context(), bus.TopicActionRequested, c.PayPalDisputeID, req); err != nil {
+				serverError(w, "publish action", err)
+				return
+			}
+		}
+
+		action, err := db.GetAction(r.Context(), key)
+		if err != nil {
+			serverError(w, "read back action", err)
+			return
+		}
+		status := http.StatusAccepted
+		if !inserted {
+			status = http.StatusOK
+		}
+		writeJSON(w, status, map[string]any{"action": action})
+	}
+}
+
+// newIdempotencyKey mints a key for an action the console did not supply one
+// for. A console that wants double-click safety sends its own; this is the
+// fallback so the column is never empty.
+func newIdempotencyKey() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("act-%d", time.Now().UnixNano())
+	}
+	return "act-" + hex.EncodeToString(b[:])
+}
+
+// optionalDecision returns the decision as a value or nil, treating "not scored
+// yet" as nil rather than an error. A server error is reported and returns nil.
+func optionalDecision(ctx context.Context, db *store.Store, caseID int64, w http.ResponseWriter) any {
+	d, err := db.GetDecision(ctx, caseID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		log.Printf("%s: decision for case %d: %v", consumerName, caseID, err)
+		return nil
+	}
+	return d
+}
+
+// optionalDraft returns the draft as a value or nil when none has been written.
+func optionalDraft(ctx context.Context, db *store.Store, caseID int64, w http.ResponseWriter) any {
+	d, err := db.GetDraft(ctx, caseID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		log.Printf("%s: draft for case %d: %v", consumerName, caseID, err)
+		return nil
+	}
+	return d
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

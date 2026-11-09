@@ -6,13 +6,18 @@ It also records a signed **mandate** when an AI agent places an order on a user'
 
 **Why:** a chargeback costs a merchant about $128 on average. Merchants win 54% of the disputes they fight, but fight only 8% of them.
 
-Status: partly built. Implemented: the webhook gateway, the event spine
-(normaliser and case service) writing cases to Postgres, the mandate ledger,
-the AI service (classifier, scoring, decision rule, drafters, grounding guard)
-and the merchant console. Not yet built: the evidence builder, the action
-executor against the Disputes API, and outcome capture, so the demo path does
-not run end to end yet. The schedule, scope and risks are in [PLAN.md](PLAN.md),
-and what remains is tracked there.
+Status: the demo path runs end to end. Implemented: the webhook gateway, the
+event spine (normaliser and case service) writing cases to Postgres, the mandate
+ledger, the AI service (classifier, scoring, decision rule, drafters, grounding
+guard), the evidence builder, the action executor against the PayPal Disputes
+API, outcome capture, and the merchant console wired to all of it. Two honesty
+boundaries hold throughout: the evidence records the builder assembles are
+staged demo data marked `"demo": true` (the mandate is the exception — a real
+signed, verified record), and while an approved action is a real Disputes API
+submission, the terminal win/lost ruling is simulated and labeled, because a
+real sandbox ruling can take days. The schedule, scope and risks are in
+[PLAN.md](PLAN.md); what is real versus staged is detailed in
+[docs/deploy.md](docs/deploy.md).
 
 ## How it works
 
@@ -173,6 +178,52 @@ Next.js console with an approve/edit flow and a Bryntum Scheduler board of dispu
 5. The merchant approves; the executor sends evidence, an offer, a message, or accepts the claim.
 6. Sandbox adjudication returns a ruling and the outcome is stored.
 
+## Test credentials
+
+The merchant console is the only thing a reviewer needs to log into.
+
+- **Deployed:** open the `countersign-console` URL. Username `merchant`, password
+  the `CONSOLE_PASSWORD` set at deploy time (the console user defaults to
+  `merchant`; see [docs/deploy.md](docs/deploy.md)). `/healthz` is outside the
+  gate so health checks do not 401.
+- **Local (`task up`):** the console is at `http://localhost:3000` with no basic
+  auth, because `CONSOLE_USER`/`CONSOLE_PASSWORD` are unset in compose — the gate
+  turns itself off when either is missing (`web/middleware.ts`).
+
+No PayPal account is required to see the whole path: with the `PAYPAL_*` values
+unset, the executor simulates each action and the ruling, both labeled as such.
+Set them to make the Disputes API calls real.
+
+## AI tools used, and how
+
+Two kinds, kept separate on purpose — the models in the product, and the
+assistants used to build it.
+
+**In the product**
+
+- **Logistic-regression scorer** (`services/ai/app/scoring.py`) — win
+  probability over interpretable features (dispute reason, delivery confirmed,
+  signature captured, a verified mandate, amount, days to deadline), returning
+  the top contributing factors so every score is explained, not asserted.
+- **Groq LLM drafter** (`services/ai/app/llm.py`, optional behind `GROQ_API_KEY`)
+  — writes the rebuttal from the case's evidence. It is always gated by the
+  grounding guard below; an ungrounded LLM draft is discarded for the
+  deterministic template drafter, and the response reports which one produced it.
+- **Grounding guard** (`services/ai/app/grounding.py`, mirrored in
+  `web/lib/grounding.ts` with a parity test) — rejects any draft sentence that
+  states a fact without citing an evidence record, so the drafter cannot invent
+  evidence.
+- **Classifier** (`services/ai/app/classify.py`) — maps PayPal's reason enums to
+  Countersign's categories; an unmodelled reason is passed through as `other`
+  rather than forced into a category.
+
+**To build it**
+
+- **Claude Code** (Anthropic) — pair-programming across the Go pipeline, the
+  Python AI service, and the Next.js console: drafting services, tests and docs,
+  and wiring the end-to-end path. Every change was reviewed and is covered by the
+  test suite the CI runs (`go test`, `pytest`, the grounding parity guard).
+
 ## Getting started
 
 Needs Docker and [Task](https://taskfile.dev). Fill in the PayPal sandbox values in `.env` after the first step.
@@ -180,7 +231,8 @@ Needs Docker and [Task](https://taskfile.dev). Fill in the PayPal sandbox values
 ```bash
 task setup    # creates .env from .env.example
 task up       # Postgres, Redpanda, topics, gateway (:8080), AI service (:8000),
-              # normaliser, case service (:8081), mandate ledger (:8083), console (:3000)
+              # normaliser, evidence builder (:8085), executor (:8086),
+              # case service (:8081), mandate ledger (:8083), console (:3000)
 task test     # Go and Python tests (needs Go 1.22 and Python 3.12 locally)
 task --list   # everything else
 ```
@@ -212,11 +264,13 @@ layer need a real database and are behind a build tag:
 TEST_DATABASE_URL=postgres://countersign:countersign@localhost:5432/countersign?sslmode=disable   go test -tags integration ./internal/store/
 ```
 
-## Planned stack
+## Stack
 
-Go (webhook gateway, event spine, mandate ledger, PayPal client), Python (AI
-service), Kafka via Redpanda, PostgreSQL, Next.js, Bryntum Scheduler, Docker
-Compose. Render for hosting if time allows.
+Go (webhook gateway, event spine, evidence builder, mandate ledger, executor
+and its PayPal Disputes client), Python (AI service), Kafka via Redpanda,
+PostgreSQL, Next.js, Bryntum Scheduler, Docker Compose. Render for hosting —
+the Blueprint is [`render.yaml`](render.yaml), deploy notes in
+[docs/deploy.md](docs/deploy.md).
 
 ## License
 

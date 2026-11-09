@@ -113,6 +113,44 @@ services:
     ports:
       - "8083:8082"
 
+  evidencebuilder:
+    build:
+      context: ./services/pipeline
+    # The image carries every binary; pick one.
+    command: ["/evidencebuilder"]
+    env_file: [.env]
+    environment:
+      REDPANDA_PROXY_URL: http://redpanda:8082
+      # Score and draft through the AI service on the compose network.
+      AI_SERVICE_URL: http://ai:8000
+      EVIDENCE_BUILDER_ADDR: ":8085"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    ports:
+      - "8085:8085"
+
+  executor:
+    build:
+      context: ./services/pipeline
+    # The image carries every binary; pick one.
+    command: ["/executor"]
+    env_file: [.env]
+    environment:
+      REDPANDA_PROXY_URL: http://redpanda:8082
+      EXECUTOR_ADDR: ":8086"
+      # With no PAYPAL_* in .env the executor simulates every action and labels
+      # the outcome; set the PayPal credentials to make submissions real.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    ports:
+      - "8086:8086"
+
   ai:
     build: ./services/ai
     env_file: [.env]

@@ -1,6 +1,6 @@
 # Render Blueprint for Countersign.
 #
-# Six services plus a managed Postgres, all in one region so they can reach
+# Nine services plus a managed Postgres, all in one region so they can reach
 # each other over the private network.
 #
 # The broker runs as a private service with a disk because Render has no
@@ -141,6 +141,66 @@ services:
           type: pserv
           name: countersign-redpanda
           property: hostport
+
+  # Assembles the evidence bundle, then scores and drafts through the AI
+  # service, for each new case. A worker: it consumes and writes, and nothing
+  # calls it. AI_SERVICE_HOSTPORT comes from the AI service's registry entry
+  # because Blueprints cannot interpolate a URL (see the note at the top).
+  - type: worker
+    name: countersign-evidencebuilder
+    runtime: docker
+    region: oregon
+    plan: 0.5c-512mb
+    dockerfilePath: ./services/pipeline/Dockerfile
+    dockerContext: ./services/pipeline
+    dockerCommand: /evidencebuilder
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: countersign-postgres
+          property: connectionString
+      - key: REDPANDA_PROXY_HOSTPORT
+        fromService:
+          type: pserv
+          name: countersign-redpanda
+          property: hostport
+      - key: AI_SERVICE_HOSTPORT
+        fromService:
+          type: pserv
+          name: countersign-ai
+          property: hostport
+
+  # Carries out approved actions against the PayPal Disputes API. With the two
+  # PAYPAL_* values set below, submissions are real; left unset, the executor
+  # simulates every action and labels the outcome. The terminal win/lost/settled
+  # ruling is always simulated and labeled: a real sandbox ruling can take days,
+  # so the board would otherwise never reach a final state in a demo.
+  - type: worker
+    name: countersign-executor
+    runtime: docker
+    region: oregon
+    plan: 0.5c-512mb
+    dockerfilePath: ./services/pipeline/Dockerfile
+    dockerContext: ./services/pipeline
+    dockerCommand: /executor
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: countersign-postgres
+          property: connectionString
+      - key: REDPANDA_PROXY_HOSTPORT
+        fromService:
+          type: pserv
+          name: countersign-redpanda
+          property: hostport
+      - key: PAYPAL_API_BASE
+        value: https://api-m.sandbox.paypal.com
+      - key: EXECUTOR_SIMULATE_RULING
+        value: "true"
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
 
   # Consumes dispute events and serves the read API the console reads.
   - type: pserv

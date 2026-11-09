@@ -1,6 +1,6 @@
 # Deploying Countersign to Render
 
-The Blueprint is [`render.yaml`](../render.yaml). It describes seven services
+The Blueprint is [`render.yaml`](../render.yaml). It describes nine services
 and one managed Postgres, all in `oregon` so they share a private network.
 
 The reason to deploy is the gateway's URL. Locally, PayPal can only reach the
@@ -13,11 +13,13 @@ deployed gateway has one HTTPS URL that stays.
 | `countersign-gateway` | web (public) | PayPal posts webhooks here. Verifies every signature. |
 | `countersign-console` | web (public) | The merchant console, behind basic auth. |
 | `countersign-normalizer` | worker | Consumes raw webhooks, publishes dispute events. |
-| `countersign-caseservice` | private | Consumes dispute events, writes cases, serves the read API. |
+| `countersign-evidencebuilder` | worker | Assembles the evidence bundle, then scores and drafts via the AI service. |
+| `countersign-executor` | worker | Carries out approved actions against the PayPal Disputes API; publishes outcomes. |
+| `countersign-caseservice` | private | Consumes dispute events and outcomes, writes cases, serves the read/write API. |
 | `countersign-mandate` | private | The signed, hash-chained mandate ledger. |
 | `countersign-ai` | private | Scoring and drafting. |
 | `countersign-redpanda` | private + disk | The broker. Render has no managed Kafka. |
-| `countersign-postgres` | database | Cases, mandates, audit trail. |
+| `countersign-postgres` | database | Cases, evidence, mandates, decisions, drafts, actions, outcomes, audit trail. |
 
 Two details worth knowing before you read the steps. Render assigns internal
 hostnames at deploy time with a generated suffix, and Blueprints cannot build a
@@ -176,14 +178,30 @@ docker run --rm -e PGPASSWORD=... postgres:16 \
 **The dead-letter topic is silent.** Nothing alerts when `cs.dlq` fills up. A
 record there means a dispute failed to process and no one has been told.
 
-## What is deliberately not deployed
+## The full path, and what is real vs staged
 
-- `demoagent` is a CLI, run by hand against the mandate service.
-- No evidence builder exists, so `cs.evidence.requested` has no consumer and
-  cases carry no evidence. Scores are a floor computed from the amount and
-  whether a mandate matches.
-- The case service is read-only, so the console refuses draft edits and actions
-  with a 501 in live mode. Nobody can act on a dispute from a deployed console
-  yet, which is why basic auth is enough for now and real accounts are not.
-- `FRAUD_MODEL_PATH` is empty: there is no trained artifact in the repo, so the
-  fraud signal stays neutral.
+The deployed pipeline now runs end to end: a verified webhook becomes a case,
+the evidence builder assembles a bundle and scores and drafts it, the console
+shows the decision and the grounded draft, and an approved action is carried out
+by the executor and its outcome folded back onto the case. Two honesty
+boundaries are worth stating plainly, because the demo leans on them:
+
+- **The evidence is staged, the mandate is real.** There is no live integration
+  with a merchant's order, carrier or support systems, so the evidence builder
+  synthesises those records and marks each `"demo": true`
+  (`services/pipeline/internal/evidence`). The mandate is the exception: it is a
+  real signed, hash-chained record, and its scoring signal reflects an actual
+  `Verify`/`Covers` check, not a staged value.
+- **The submission is real, the verdict is labeled.** With the two `PAYPAL_*`
+  values set on `countersign-executor`, an approved action is a real call to the
+  PayPal Disputes API, which moves a sandbox dispute to *under review* — it does
+  not return a won/lost ruling, which can take days. So the terminal ruling the
+  board needs to reach a final state is emitted separately and always marked
+  `simulated: true` (`EXECUTOR_SIMULATE_RULING`, on by default). Leave the
+  `PAYPAL_*` values unset and the executor simulates the whole action and labels
+  every outcome, which is how the stack runs end to end before credentials exist.
+
+`FRAUD_MODEL_PATH` is still empty: there is no trained artifact in the repo, so
+the fraud signal stays neutral. Draft editing from the console is also still
+demo-store only — in live mode the pipeline owns the draft and the merchant
+approves it rather than rewriting it.
