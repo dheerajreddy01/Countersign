@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -30,6 +31,14 @@ type Store struct {
 
 // Open connects to Postgres and verifies the connection before returning, so a
 // bad DATABASE_URL fails at boot rather than on the first dispute.
+//
+// "Bad" means the server answered and refused: wrong password, no such
+// database. That fails at once. A server that cannot be reached yet, or says it
+// is still starting, is retried for up to OpenTimeout, because on a fresh
+// Render Blueprint every service boots alongside a database that is not yet
+// accepting connections. Failing on the first refused dial there failed every
+// database-backed service's first deploy, and a failed first deploy stops the
+// Blueprint sync before it creates the services that depend on them.
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
@@ -39,11 +48,62 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}
-	if err := pool.Ping(ctx); err != nil {
+	if err := pingUntilReady(ctx, pool.Ping, OpenTimeout, openRetryInterval); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("ping: %w", err)
 	}
 	return &Store{pool: pool}, nil
+}
+
+// OpenTimeout bounds how long Open waits for Postgres to start accepting
+// connections. A managed database is usually ready within a minute of the
+// services that use it; past this, something is wrong and the service should
+// exit so the platform reports it.
+var OpenTimeout = 2 * time.Minute
+
+var openRetryInterval = 2 * time.Second
+
+// pingUntilReady calls ping until it succeeds, it fails permanently, timeout
+// passes, or ctx is cancelled.
+func pingUntilReady(ctx context.Context, ping func(context.Context) error, timeout, interval time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for attempt := 1; ; attempt++ {
+		err := ping(ctx)
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err() // shutting down: say so, not "unavailable"
+		}
+		if !transient(err) {
+			return err
+		}
+		if time.Now().Add(interval).After(deadline) {
+			return fmt.Errorf("postgres still unavailable after %s: %w", timeout, err)
+		}
+		log.Printf("postgres: not ready yet (attempt %d), retrying in %s: %v", attempt, interval, err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
+
+// transient reports whether a connection error is worth retrying. Any error
+// the server itself returned is a real answer — bad credentials, missing
+// database — except 57P03 (cannot_connect_now), which is the server saying it
+// is still starting up. Anything else (refused, timed out, DNS) means the
+// server is not reachable yet.
+func transient(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "57P03"
+	}
+	return true
 }
 
 func (s *Store) Close() { s.pool.Close() }
