@@ -1,6 +1,6 @@
 # Render Blueprint for Countersign.
 #
-# Six services plus a managed Postgres, all in one region so they can reach
+# Nine services plus a managed Postgres, all in one region so they can reach
 # each other over the private network.
 #
 # The broker runs as a private service with a disk because Render has no
@@ -17,9 +17,19 @@
 #
 # Three steps remain after the first apply, all in docs/deploy.md:
 #   1. paste the values marked `sync: false` (PayPal credentials, the mandate
-#      signing key, the console password)
+#      signing key, the console password, the Groq API key)
 #   2. apply the schema with infra/postgres/migrate.sh
 #   3. re-register the PayPal webhook at the gateway's new URL
+
+# A generated shared secret the console presents to the case service on the
+# money-moving action endpoint, so that endpoint is not callable by anything
+# else that can reach it on the private network. Generated once and injected
+# into both services, so there is nothing to paste and the two always agree.
+envVarGroups:
+  - name: countersign-secrets
+    envVars:
+      - key: INTERNAL_API_TOKEN
+        generateValue: true
 
 databases:
   - name: countersign-postgres
@@ -57,19 +67,27 @@ services:
       --pandaproxy-addr 0.0.0.0:8082
       --advertise-pandaproxy-addr 127.0.0.1:8082
       --set redpanda.auto_create_topics_enabled=true
+    # 1 GB, not 5: a Render disk can be grown later but never shrunk, and it
+    # keeps billing while the service is suspended, so the first apply is the
+    # only chance to pick the small one. Demo volume is a few thousand events.
     disk:
       name: redpanda-data
       mountPath: /var/lib/redpanda/data
-      sizeGB: 5
+      sizeGB: 1
 
   # --- public: PayPal posts here -------------------------------------------
   # The one service that must be reachable from outside, and the reason to
   # deploy at all: a stable HTTPS URL that does not die with a local tunnel.
+  # Free instance type: nothing calls the gateway over the private network, it
+  # only receives PayPal's public POSTs, and a free service may still *send*
+  # private requests (to the broker). The cost is a 15-minute idle spin-down and
+  # a ~1 minute cold start, so the first webhook after a quiet spell can time
+  # out — PayPal retries, and `curl /healthz` before a demo wakes it on purpose.
   - type: web
     name: countersign-gateway
     runtime: docker
     region: oregon
-    plan: 0.5c-512mb
+    plan: free
     dockerfilePath: ./services/gateway/Dockerfile
     dockerContext: ./services/gateway
     healthCheckPath: /healthz
@@ -98,15 +116,18 @@ services:
   # --- public: the merchant console ----------------------------------------
   # Behind basic auth (web/middleware.ts), because it shows every dispute.
   # /healthz is outside that gate so this health check does not 401.
+  # Free: same reasoning as the gateway. A browser waiting a minute for the
+  # first page load is a fair trade for a third of the monthly bill.
   - type: web
     name: countersign-console
     runtime: docker
     region: oregon
-    plan: 0.5c-512mb
+    plan: free
     dockerfilePath: ./web/Dockerfile
     dockerContext: ./web
     healthCheckPath: /healthz
     envVars:
+      - fromGroup: countersign-secrets
       - key: CONSOLE_API_HOSTPORT
         fromService:
           type: pserv
@@ -142,6 +163,66 @@ services:
           name: countersign-redpanda
           property: hostport
 
+  # Assembles the evidence bundle, then scores and drafts through the AI
+  # service, for each new case. A worker: it consumes and writes, and nothing
+  # calls it. AI_SERVICE_HOSTPORT comes from the AI service's registry entry
+  # because Blueprints cannot interpolate a URL (see the note at the top).
+  - type: worker
+    name: countersign-evidencebuilder
+    runtime: docker
+    region: oregon
+    plan: 0.5c-512mb
+    dockerfilePath: ./services/pipeline/Dockerfile
+    dockerContext: ./services/pipeline
+    dockerCommand: /evidencebuilder
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: countersign-postgres
+          property: connectionString
+      - key: REDPANDA_PROXY_HOSTPORT
+        fromService:
+          type: pserv
+          name: countersign-redpanda
+          property: hostport
+      - key: AI_SERVICE_HOSTPORT
+        fromService:
+          type: pserv
+          name: countersign-ai
+          property: hostport
+
+  # Carries out approved actions against the PayPal Disputes API. With the two
+  # PAYPAL_* values set below, submissions are real; left unset, the executor
+  # simulates every action and labels the outcome. The terminal win/lost/settled
+  # ruling is always simulated and labeled: a real sandbox ruling can take days,
+  # so the board would otherwise never reach a final state in a demo.
+  - type: worker
+    name: countersign-executor
+    runtime: docker
+    region: oregon
+    plan: 0.5c-512mb
+    dockerfilePath: ./services/pipeline/Dockerfile
+    dockerContext: ./services/pipeline
+    dockerCommand: /executor
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: countersign-postgres
+          property: connectionString
+      - key: REDPANDA_PROXY_HOSTPORT
+        fromService:
+          type: pserv
+          name: countersign-redpanda
+          property: hostport
+      - key: PAYPAL_API_BASE
+        value: https://api-m.sandbox.paypal.com
+      - key: EXECUTOR_SIMULATE_RULING
+        value: "true"
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+
   # Consumes dispute events and serves the read API the console reads.
   - type: pserv
     name: countersign-caseservice
@@ -152,6 +233,7 @@ services:
     dockerContext: ./services/pipeline
     dockerCommand: /caseservice
     envVars:
+      - fromGroup: countersign-secrets
       - key: CASE_SERVICE_ADDR
         value: ":8081"
       - key: DATABASE_URL
@@ -167,17 +249,29 @@ services:
   # The mandate ledger. MANDATE_SIGNING_KEY must be set and must then never
   # change: unset, the service mints a throwaway key per boot and every mandate
   # signed with the previous one stops verifying.
-  - type: pserv
+  #
+  # A web service rather than a private one, which is the only way a mandate
+  # can be recorded against the deployed stack: cmd/demoagent posts to
+  # MANDATE_SERVICE_URL from outside Render, a Blueprint has no one-off task to
+  # run it from inside, and with this private the mandate signal would always
+  # read "absent" in the deployed demo — the one signal docs/deploy.md calls
+  # real. The trade is that POST /mandates is then publicly callable, so the
+  # ledger accepts records from anyone who finds the URL. Acceptable for a
+  # sandbox demo and not beyond it; a real deployment puts this behind the same
+  # shared-secret check as the case service action endpoint.
+  - type: web
     name: countersign-mandate
     runtime: docker
     region: oregon
-    plan: 0.5c-512mb
+    plan: free
     dockerfilePath: ./services/pipeline/Dockerfile
     dockerContext: ./services/pipeline
     dockerCommand: /mandate
+    healthCheckPath: /healthz
     envVars:
+      # Render routes to the port in $PORT, which is 10000.
       - key: MANDATE_SERVICE_ADDR
-        value: ":8082"
+        value: ":10000"
       - key: DATABASE_URL
         fromDatabase:
           name: countersign-postgres
@@ -202,3 +296,11 @@ services:
       # artifact in the repo to point at.
       - key: FRAUD_MODEL_PATH
         value: ""
+      # Unset, POST /draft uses the deterministic template drafter and the
+      # grounded-LLM half of the stack is dead on the deployed copy while
+      # looking healthy. Set it and the LLM writes the rebuttal, with the
+      # grounding guard still gating the result. GROQ_MODEL is left unset: the
+      # default in services/ai/app/llm.py is checked against Groq's served
+      # list, and an ungrounded or failed draft falls back to the template.
+      - key: GROQ_API_KEY
+        sync: false

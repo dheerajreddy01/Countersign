@@ -23,10 +23,13 @@ export async function loadCase(id: string): Promise<DisputeCase | null> {
 }
 
 /**
- * The case service is a read model: it has no endpoint for saving a draft or
- * recording an action, so in live mode those writes are refused rather than
- * silently applied to a store nobody is reading.
+ * In live mode the pipeline owns the draft: the evidence builder generates it
+ * from the case's evidence and the grounding guard gates it, so the console does
+ * not regenerate or hand-edit it. Actions, by contrast, are forwarded to the
+ * case service and executed. This message is what the draft-editing routes
+ * return in live mode; it is not used for actions, which now have a write path.
  */
 export const LIVE_READ_ONLY_MESSAGE =
-  "The pipeline's case service is read-only: draft edits and actions are not " +
-  "persisted yet. Unset CONSOLE_API_URL to use the demo store, which does.";
+  "In live mode the draft is generated and grounded by the pipeline's evidence " +
+  "builder, not edited in the console. Unset CONSOLE_API_URL to use the demo " +
+  "store, which supports editing.";

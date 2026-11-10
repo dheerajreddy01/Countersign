@@ -14,7 +14,7 @@ import { MandateCard } from "@/components/MandateCard";
 import { ScoreCard } from "@/components/ScoreCard";
 import { Timeline } from "@/components/Timeline";
 import { formatDateTime, formatMoney } from "@/lib/format";
-import { isLive, LIVE_READ_ONLY_MESSAGE, loadCase, loadSummaries } from "@/lib/data";
+import { isLive, loadCase, loadSummaries } from "@/lib/data";
 
 export const dynamic = "force-dynamic";
 
@@ -135,7 +135,7 @@ export default async function CasePage({
             caseId={c.id}
             recommendation={c.decision.recommendation}
             groundingPassed={c.draft.groundingPassed}
-            disabled={closed || live}
+            disabled={closed}
           />
           {closed ? (
             <p className="text-center text-xs text-slate-400">
@@ -144,7 +144,8 @@ export default async function CasePage({
           ) : null}
           {live && !closed ? (
             <p className="text-center text-xs text-slate-400">
-              {LIVE_READ_ONLY_MESSAGE}
+              Live mode: the draft is generated and grounded by the pipeline;
+              approving an action submits it through the case service.
             </p>
           ) : null}
         </div>

@@ -1,11 +1,17 @@
 import { NextResponse } from "next/server";
-import { isLive, LIVE_READ_ONLY_MESSAGE } from "@/lib/data";
+import { postAction } from "@/lib/backend";
+import { isLive } from "@/lib/data";
 import { applyAction, getCase } from "@/lib/store";
 import type { ActionKind } from "@/lib/types";
 
 // POST /api/cases/:id/actions — record a merchant action. Evidence and message
 // actions require a passing grounding guard; the handler enforces that server
 // side so the UI cannot bypass it.
+//
+// In live mode the action is forwarded to the pipeline's case service, which
+// re-checks the grounding gate and hands it to the executor; in demo mode it is
+// applied to the in-memory store. Either way the grounding gate is enforced on
+// the server, not just in the UI.
 export const dynamic = "force-dynamic";
 
 const VALID: ActionKind[] = [
@@ -21,10 +27,21 @@ export async function POST(
   { params }: { params: { id: string } },
 ) {
   if (isLive()) {
-    return NextResponse.json(
-      { error: LIVE_READ_ONLY_MESSAGE },
-      { status: 501 },
-    );
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json({ error: "invalid JSON" }, { status: 400 });
+    }
+    const { kind, note } = body as { kind?: ActionKind; note?: string };
+    if (!kind || !VALID.includes(kind)) {
+      return NextResponse.json(
+        { error: `kind must be one of ${VALID.join(", ")}` },
+        { status: 400 },
+      );
+    }
+    const result = await postAction(params.id, kind, note ?? "");
+    return NextResponse.json(result.body, { status: result.status });
   }
 
   let body: unknown;

@@ -2,23 +2,33 @@
 // CONSOLE_API_URL is set.
 //
 // That service is the pipeline's read model: it knows the case row, its audit
-// trail, and any mandate matching the disputed transaction. Evidence records,
-// decisions and drafts are not persisted anywhere yet, so this module derives
-// the decision through the same mirror of the scoring rule the demo store uses
-// and leaves the rest empty. Nothing here invents evidence or a draft: an
-// empty evidence list and an unwritten draft are the true state of a case the
-// evidence builder has not touched.
+// trail, the mandate matching the disputed transaction, and — once the evidence
+// builder and executor have run — the evidence bundle, the scored decision, the
+// grounded draft, and any actions and outcomes. This module maps each of those
+// when present and falls back honestly when they are not: a case the evidence
+// builder has not reached yet carries an empty evidence list, the scoring
+// mirror's floor estimate, and an unwritten draft, which is its true state.
 
 import { scoreDecision } from "./scoring";
 import {
   toSummary,
+  type ActionKind,
+  type ActionRecord,
+  type ActionStatus,
   type CaseStatus,
   type CaseSummary,
+  type Citation,
+  type Decision,
   type DisputeCase,
   type DisputeReason,
   type DisputeStage,
   type Draft,
+  type DraftSource,
+  type EvidenceRecord,
+  type EvidenceType,
+  type Factor,
   type Mandate,
+  type Recommendation,
   type TimelineEntry,
 } from "./types";
 
@@ -186,10 +196,165 @@ function emptyDraft(updatedAt: string): Draft {
   };
 }
 
+// --- write-path shapes, as the case service encodes them --------------------
+
+interface ApiEvidence {
+  id: number;
+  type: string;
+  source: string;
+  payload: Record<string, unknown> | null;
+  hash: string;
+  created_at: string;
+}
+
+interface ApiDecision {
+  factors: {
+    p_win?: number;
+    ev_fight?: number;
+    refund_cost?: number;
+    recommendation?: string;
+    top_factors?: { name: string; weight: number }[];
+    fraud_likelihood?: number | null;
+  } | null;
+  ev: string;
+  recommendation: string;
+}
+
+interface ApiDraft {
+  text: string;
+  citations: string[] | null;
+  grounding_passed: boolean;
+  uncited_sentences: string[] | null;
+  source: string;
+  updated_at: string;
+}
+
+interface ApiAction {
+  idempotency_key: string;
+  kind: string;
+  status: string;
+  note: string;
+  created_at: string;
+}
+
+// store.EvidenceRecord.Type values mapped onto the console's EvidenceType. An
+// unrecognised type falls back to "order" rather than being dropped.
+const EVIDENCE_TYPE: Record<string, EvidenceType> = {
+  order_record: "order",
+  mandate: "mandate",
+  delivery_confirmation: "delivery_confirmation",
+  support_thread: "message",
+  item_listing: "invoice",
+};
+
+// Executor action statuses mapped onto the console's ActionStatus.
+const ACTION_STATUS: Record<string, ActionStatus> = {
+  requested: "pending",
+  executed: "acknowledged",
+  failed: "failed",
+};
+
+const ACTION_KINDS: readonly ActionKind[] = [
+  "provide_evidence",
+  "make_offer",
+  "send_message",
+  "accept_claim",
+];
+
+function mapEvidence(records: ApiEvidence[] | null): EvidenceRecord[] {
+  return (records ?? []).map((r) => {
+    const payload = r.payload ?? {};
+    const summary = typeof payload.summary === "string" ? payload.summary : "";
+    // The detail preview is the payload minus the fields the console renders
+    // separately, so the drawer shows what was stored without repeating itself.
+    const { marker: _m, summary: _s, demo: _d, ...rest } = payload as Record<string, unknown>;
+    return {
+      id: String(r.id),
+      type: EVIDENCE_TYPE[r.type] ?? "order",
+      source: r.source,
+      summary,
+      detail: JSON.stringify(rest),
+      hash: r.hash,
+      createdAt: r.created_at,
+    };
+  });
+}
+
+// humanize turns a model factor key ("mandate_matching") into a label
+// ("Mandate matching") for display.
+function humanize(key: string): string {
+  const spaced = key.replace(/_/g, " ");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+function mapLiveDecision(api: ApiDecision, amount: number): Decision {
+  const f = api.factors ?? {};
+  const pWin = f.p_win ?? 0;
+  const evFight = f.ev_fight ?? (Number.parseFloat(api.ev) || 0);
+  const refundCost = f.refund_cost ?? amount;
+  // ev_fight = p_win * amount - cost_to_fight, so the cost is recoverable
+  // exactly rather than being stored separately.
+  const costToFight = Math.max(0, pWin * amount - evFight);
+  const recommendation: Recommendation =
+    (f.recommendation ?? api.recommendation) === "fight" ? "fight" : "refund";
+  const factors: Factor[] = (f.top_factors ?? []).map((t) => ({
+    key: t.name,
+    label: humanize(t.name),
+    contribution: t.weight,
+  }));
+  return {
+    pWin,
+    evFight,
+    refundCost,
+    costToFight,
+    recommendation,
+    factors,
+    fraudLikelihood: f.fraud_likelihood ?? null,
+    modelVersions: {},
+  };
+}
+
+function mapLiveDraft(api: ApiDraft): Draft {
+  const citations: Citation[] = (api.citations ?? []).map((id) => ({
+    marker: id,
+    evidenceId: id,
+  }));
+  const source: DraftSource | undefined =
+    api.source === "groq" || api.source === "template" ? api.source : undefined;
+  return {
+    text: api.text,
+    citations,
+    groundingPassed: api.grounding_passed,
+    uncitedSentences: api.uncited_sentences ?? [],
+    source,
+    updatedAt: api.updated_at,
+  };
+}
+
+function mapActions(records: ApiAction[] | null): ActionRecord[] {
+  return (records ?? []).map((a) => ({
+    idempotencyKey: a.idempotency_key,
+    kind: (ACTION_KINDS as readonly string[]).includes(a.kind)
+      ? (a.kind as ActionKind)
+      : "send_message",
+    status: ACTION_STATUS[a.status] ?? "pending",
+    note: a.note,
+    createdAt: a.created_at,
+  }));
+}
+
+interface LiveParts {
+  evidence?: ApiEvidence[] | null;
+  decision?: ApiDecision | null;
+  draft?: ApiDraft | null;
+  actions?: ApiAction[] | null;
+}
+
 function mapCase(
   api: ApiCase,
   timeline: ApiAuditEntry[] | null,
   mandates: ApiMandateEntry[] | null,
+  parts: LiveParts = {},
 ): DisputeCase {
   const amount = Number.parseFloat(api.amount) || 0;
   const reason = oneOf(api.reason, REASONS, "other");
@@ -198,6 +363,22 @@ function mapCase(
   // itself. Scoring off the flag keeps one case from showing two different
   // win probabilities in the table and on its own page.
   const mandateMatching = mandate !== null || api.has_mandate === true;
+
+  // Use the persisted decision when the scorer has run; otherwise the mirror's
+  // floor estimate, with the signals the evidence builder would supply passed
+  // as false rather than guessed.
+  const decision = parts.decision
+    ? mapLiveDecision(parts.decision, amount)
+    : scoreDecision({
+        amount,
+        reason,
+        deliveryConfirmed: false,
+        signatureCaptured: false,
+        mandateMatching,
+        priorCustomerContact: false,
+        buyerDisputeHistory: 0,
+        daysToDeadline: daysUntil(api.respond_by),
+      });
 
   return {
     id: String(api.id),
@@ -213,23 +394,11 @@ function mapCase(
     productName: api.product_name,
     createdAt: api.created_at,
     updatedAt: api.updated_at,
-    evidence: [],
+    evidence: mapEvidence(parts.evidence ?? null),
     mandate,
-    // Signals the evidence builder would supply are absent, so they are passed
-    // as false rather than guessed: the score is the floor for this case, not a
-    // measurement of it.
-    decision: scoreDecision({
-      amount,
-      reason,
-      deliveryConfirmed: false,
-      signatureCaptured: false,
-      mandateMatching,
-      priorCustomerContact: false,
-      buyerDisputeHistory: 0,
-      daysToDeadline: daysUntil(api.respond_by),
-    }),
-    draft: emptyDraft(api.updated_at),
-    actions: [],
+    decision,
+    draft: parts.draft ? mapLiveDraft(parts.draft) : emptyDraft(api.updated_at),
+    actions: mapActions(parts.actions ?? null),
     timeline: mapTimeline(timeline),
   };
 }
@@ -260,14 +429,59 @@ export async function fetchSummaries(): Promise<CaseSummary[]> {
   }));
 }
 
-/** One case with its timeline and mandate, or null when the id is unknown. */
+/** One case with its timeline, mandate, evidence, decision, draft and actions. */
 export async function fetchCase(id: string): Promise<DisputeCase | null> {
   if (!/^\d+$/.test(id)) return null;
   const body = await get<{
     case: ApiCase;
     timeline: ApiAuditEntry[] | null;
     mandates: ApiMandateEntry[] | null;
+    evidence: ApiEvidence[] | null;
+    decision: ApiDecision | null;
+    draft: ApiDraft | null;
+    actions: ApiAction[] | null;
   }>(`/cases/${id}`);
   if (!body?.case) return null;
-  return mapCase(body.case, body.timeline, body.mandates);
+  return mapCase(body.case, body.timeline, body.mandates, {
+    evidence: body.evidence,
+    decision: body.decision,
+    draft: body.draft,
+    actions: body.actions,
+  });
+}
+
+/**
+ * Forward a merchant action to the case service's write endpoint.
+ *
+ * This is the live write path: the console's action route calls here instead of
+ * refusing with a 501. The case service re-checks the grounding gate server
+ * side and hands the action to the executor, so a 409 here means the draft has
+ * not passed grounding and the action was correctly refused.
+ */
+export async function postAction(
+  id: string,
+  kind: ActionKind,
+  note: string,
+): Promise<{ ok: boolean; status: number; body: unknown }> {
+  const base = backendURL();
+  if (!base) throw new Error("CONSOLE_API_URL is not set");
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  // Service-to-service auth for the money-moving write path: when the case
+  // service is configured with INTERNAL_API_TOKEN, it requires this header, so
+  // only the console (which shares the secret) can submit actions.
+  const token = process.env.INTERNAL_API_TOKEN?.trim();
+  if (token) headers["x-internal-token"] = token;
+  const res = await fetch(`${base}/cases/${id}/actions`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ kind, note }),
+    cache: "no-store",
+  });
+  let body: unknown = null;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+  return { ok: res.ok, status: res.status, body };
 }
