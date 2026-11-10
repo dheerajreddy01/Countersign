@@ -13,6 +13,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -289,5 +290,158 @@ func TestADisputeFirstSeenResolvedDoesNotRequestEvidence(t *testing.T) {
 	}
 	if n := proxy.published(bus.TopicEvidenceRequested); n != 0 {
 		t.Errorf("evidence requested %d times for a dispute that is already over, want 0", n)
+	}
+}
+
+// --- F2 and F3: the action endpoint ----------------------------------------
+
+func postAction(t *testing.T, h http.HandlerFunc, caseID int64, kind string) (int, map[string]any) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"kind": kind, "note": "test"})
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/cases/%d/actions", caseID), bytes.NewReader(body))
+	req.SetPathValue("id", fmt.Sprint(caseID))
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	return rec.Code, out
+}
+
+func actionCount(t *testing.T, ctx context.Context, db *store.Store, caseID int64) int {
+	t.Helper()
+	acts, err := db.ActionsForCase(ctx, caseID)
+	if err != nil {
+		t.Fatalf("ActionsForCase: %v", err)
+	}
+	return len(acts)
+}
+
+func TestDoubleClickedActionRunsOnce(t *testing.T) {
+	db, ctx := openStore(t)
+	proxy, pub := newFakeProxy(t)
+	h := actionHandler(db, pub, "")
+	c := openCase(t, ctx, db, pub, "decision_pending")
+
+	// Several approvals at once, as a double- or triple-click sends them.
+	const clicks = 5
+	codes := make([]int, clicks)
+	bodies := make([]map[string]any, clicks)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < clicks; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			codes[i], bodies[i] = postAction(t, h, c.ID, "accept_claim")
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	accepted, refused := 0, 0
+	for i, code := range codes {
+		switch code {
+		case http.StatusAccepted:
+			accepted++
+		case http.StatusConflict:
+			refused++
+			if msg, _ := bodies[i]["error"].(string); !strings.Contains(msg, "still being processed") {
+				t.Errorf("409 body = %v, want an error saying an action is in progress", bodies[i])
+			}
+		default:
+			t.Errorf("click %d: status %d (%v)", i, code, bodies[i])
+		}
+	}
+	if accepted != 1 || refused != clicks-1 {
+		t.Errorf("accepted=%d refused=%d, want 1 and %d (codes %v)", accepted, refused, clicks-1, codes)
+	}
+	if n := proxy.published(bus.TopicActionRequested); n != 1 {
+		t.Errorf("published %d actions to the executor, want 1", n)
+	}
+	if n := actionCount(t, ctx, db, c.ID); n != 1 {
+		t.Errorf("recorded %d actions, want 1", n)
+	}
+}
+
+func TestANewActionIsAllowedOnceThePreviousOneFinished(t *testing.T) {
+	db, ctx := openStore(t)
+	_, pub := newFakeProxy(t)
+	h := actionHandler(db, pub, "")
+	c := openCase(t, ctx, db, pub, "decision_pending")
+
+	code, body := postAction(t, h, c.ID, "make_offer")
+	if code != http.StatusAccepted {
+		t.Fatalf("first action: %d %v", code, body)
+	}
+	action, _ := body["action"].(map[string]any)
+	key, _ := action["idempotency_key"].(string)
+	if err := db.UpdateActionResult(ctx, key, "executed", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("UpdateActionResult: %v", err)
+	}
+	if code, body := postAction(t, h, c.ID, "make_offer"); code != http.StatusAccepted {
+		t.Errorf("action after the first executed: %d %v, want 202", code, body)
+	}
+}
+
+func TestAnUnpublishedActionDoesNotLockTheCase(t *testing.T) {
+	db, ctx := openStore(t)
+	proxy, pub := newFakeProxy(t)
+	h := actionHandler(db, pub, "")
+	c := openCase(t, ctx, db, pub, "decision_pending")
+
+	proxy.fail.Store(true)
+	if code, body := postAction(t, h, c.ID, "make_offer"); code != http.StatusInternalServerError {
+		t.Fatalf("with the broker down: %d %v, want 500", code, body)
+	}
+	proxy.fail.Store(false)
+	if code, body := postAction(t, h, c.ID, "make_offer"); code != http.StatusAccepted {
+		t.Errorf("retry after the broker recovered: %d %v, want 202", code, body)
+	}
+}
+
+func TestActionsOnAClosedCaseAreRefused(t *testing.T) {
+	db, ctx := openStore(t)
+	proxy, pub := newFakeProxy(t)
+	h := actionHandler(db, pub, "")
+
+	for _, status := range []string{"won", "lost", "settled", "refunded"} {
+		t.Run(status, func(t *testing.T) {
+			c := openCase(t, ctx, db, pub, status)
+			before := proxy.published(bus.TopicActionRequested)
+
+			code, body := postAction(t, h, c.ID, "accept_claim")
+			if code != http.StatusConflict {
+				t.Fatalf("accept_claim on a %s case: %d %v, want 409", status, code, body)
+			}
+			if msg, _ := body["error"].(string); !strings.Contains(msg, "already closed") {
+				t.Errorf("409 body = %v, want an error saying the case is closed", body)
+			}
+			if proxy.published(bus.TopicActionRequested) != before {
+				t.Error("a refused action was still published to the executor")
+			}
+			if n := actionCount(t, ctx, db, c.ID); n != 0 {
+				t.Errorf("recorded %d actions, want 0", n)
+			}
+			if got, _ := db.GetCase(ctx, c.ID); got.Status != status {
+				t.Errorf("status = %q, want %q unchanged", got.Status, status)
+			}
+		})
+	}
+}
+
+func TestAFollowUpOnASubmittedCaseIsAllowed(t *testing.T) {
+	db, ctx := openStore(t)
+	_, pub := newFakeProxy(t)
+	h := actionHandler(db, pub, "")
+
+	// action_taken means submitted and awaiting a ruling: still open, and a
+	// message to the buyer after providing evidence is legitimate.
+	c := openCase(t, ctx, db, pub, "action_taken")
+	if err := db.SaveDraft(ctx, store.Draft{CaseID: c.ID, Text: "cited [1]", GroundingPassed: true}); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	if code, body := postAction(t, h, c.ID, "send_message"); code != http.StatusAccepted {
+		t.Errorf("send_message on an action_taken case: %d %v, want 202", code, body)
 	}
 }

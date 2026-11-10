@@ -458,8 +458,10 @@ export async function fetchCase(id: string): Promise<DisputeCase | null> {
  *
  * This is the live write path: the console's action route calls here instead of
  * refusing with a 501. The case service re-checks the grounding gate server
- * side and hands the action to the executor, so a 409 here means the draft has
- * not passed grounding and the action was correctly refused.
+ * side and hands the action to the executor. A 409 here is a correct refusal:
+ * the draft has not passed grounding, the case is already closed, or another
+ * action on it is still with the executor. Its body is `{"error": "..."}`
+ * written for the merchant, and the route passes it through unchanged.
  */
 export async function postAction(
   id: string,

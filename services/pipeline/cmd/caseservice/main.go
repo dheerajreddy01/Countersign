@@ -581,6 +581,17 @@ func actionHandler(db *store.Store, publisher *bus.Publisher, internalToken stri
 			return
 		}
 
+		// A decided case is closed. Any action now is at best noise to PayPal and
+		// at worst moves money for nothing: accept_claim on a case already won
+		// refunds a buyer who lost. A case that is action_taken (submitted, no
+		// ruling yet) is still open, and a follow-up message there is legitimate.
+		if terminalStatuses[c.Status] {
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error": fmt.Sprintf("this case is already closed (%s); no further actions can be taken on it", c.Status),
+			})
+			return
+		}
+
 		// The grounding gate: an action that submits the draft needs a draft that
 		// passed the guard. No draft at all is as disqualifying as a failing one.
 		if needsGrounding[body.Kind] {
@@ -603,6 +614,14 @@ func actionHandler(db *store.Store, publisher *bus.Publisher, internalToken stri
 		inserted, err := db.InsertAction(r.Context(), store.Action{
 			IdempotencyKey: key, CaseID: id, Kind: body.Kind, Note: body.Note,
 		})
+		if errors.Is(err, store.ErrActionInFlight) {
+			// The double-click: the first request is with the executor, and running
+			// a second against PayPal would repeat it.
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error": "another action on this case is still being processed; wait for it to finish before taking another",
+			})
+			return
+		}
 		if err != nil {
 			serverError(w, "insert action", err)
 			return
@@ -620,6 +639,13 @@ func actionHandler(db *store.Store, publisher *bus.Publisher, internalToken stri
 				"currency":        c.Currency,
 			})
 			if err := publisher.Publish(r.Context(), bus.TopicActionRequested, c.PayPalDisputeID, req); err != nil {
+				// The executor will never see this action, so it must not stay
+				// 'requested': that would hold the one-in-flight slot and lock the
+				// merchant out of the case for good.
+				detail, _ := json.Marshal(map[string]any{"error": "could not hand the action to the executor"})
+				if uerr := db.UpdateActionResult(context.WithoutCancel(r.Context()), key, "failed", detail); uerr != nil {
+					log.Printf("%s: release unpublished action %s: %v", consumerName, key, uerr)
+				}
 				serverError(w, "publish action", err)
 				return
 			}
@@ -640,9 +666,9 @@ func subtleCompare(a, b string) int {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b))
 }
 
-// newIdempotencyKey mints a key for an action the console did not supply one
-// for. A console that wants double-click safety sends its own; this is the
-// fallback so the column is never empty.
+// newIdempotencyKey mints the key for a new action. A fresh key per request
+// means the key cannot catch a double-click; the one-requested-action-per-case
+// index (migration 005) is what does.
 func newIdempotencyKey() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
