@@ -359,10 +359,16 @@ func (s *Store) RecordOutcome(ctx context.Context, in OutcomeInput) (bool, error
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// The WHERE clause is not decoration. outcomes_event_key (migration 004) is
+	// a partial unique index, and Postgres only accepts a partial index as the
+	// ON CONFLICT arbiter when the statement repeats its predicate. Without it
+	// the insert fails on every call with SQLSTATE 42P10 ("no unique or
+	// exclusion constraint matching the ON CONFLICT specification"), every
+	// outcome is dead-lettered, and no case can ever reach a final state.
 	tag, err := tx.Exec(ctx,
 		`INSERT INTO outcomes (case_id, result, payload, event_key)
 		 VALUES ($1, $2, $3, $4)
-		 ON CONFLICT (event_key) DO NOTHING`,
+		 ON CONFLICT (event_key) WHERE event_key IS NOT NULL DO NOTHING`,
 		in.CaseID, in.Result, []byte(payload), eventKey)
 	if err != nil {
 		return false, fmt.Errorf("insert outcome for case %d: %w", in.CaseID, err)
