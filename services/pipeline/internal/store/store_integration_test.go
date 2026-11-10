@@ -11,6 +11,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -510,5 +511,38 @@ func TestListCasesCarriesThePersistedDecision(t *testing.T) {
 	}
 	if d := byDispute["PP-D-UNSCORED"].Decision; d != nil {
 		t.Errorf("unscored case listed with a decision: %+v", d)
+	}
+}
+
+// The evidence builder advances a case from a request published when it
+// opened. If PayPal resolved the dispute in the meantime, that late step must
+// not drag the closed case back to decision_pending.
+func TestSetCaseStatusDoesNotReopenAClosedCase(t *testing.T) {
+	s, ctx := newTestStore(t)
+	c, _, err := s.UpsertCase(ctx, testDispute("PP-D-CLOSED"))
+	if err != nil {
+		t.Fatalf("UpsertCase: %v", err)
+	}
+	if _, err := s.RecordOutcome(ctx, OutcomeInput{CaseID: c.ID, Result: "won", Status: "won", EventKey: "paypal:PP-D-CLOSED"}); err != nil {
+		t.Fatalf("RecordOutcome: %v", err)
+	}
+	if err := s.SetCaseStatus(ctx, c.ID, "decision_pending", "evidence-builder", "Scored and drafted", nil); err != nil {
+		t.Fatalf("SetCaseStatus on a closed case should be a no-op, got %v", err)
+	}
+	got, _ := s.GetCase(ctx, c.ID)
+	if got.Status != "won" {
+		t.Errorf("status = %q, want won to survive a late lifecycle step", got.Status)
+	}
+
+	// An open case still advances, and a missing one is still reported.
+	open, _, _ := s.UpsertCase(ctx, testDispute("PP-D-OPEN"))
+	if err := s.SetCaseStatus(ctx, open.ID, "evidence_ready", "evidence-builder", "ready", nil); err != nil {
+		t.Fatalf("SetCaseStatus: %v", err)
+	}
+	if got, _ := s.GetCase(ctx, open.ID); got.Status != "evidence_ready" {
+		t.Errorf("open case status = %q, want evidence_ready", got.Status)
+	}
+	if err := s.SetCaseStatus(ctx, 1<<40, "evidence_ready", "x", "y", nil); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing case: err = %v, want ErrNotFound", err)
 	}
 }

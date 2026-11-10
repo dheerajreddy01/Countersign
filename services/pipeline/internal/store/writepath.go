@@ -429,6 +429,13 @@ func (s *Store) OutcomesForCase(ctx context.Context, caseID int64) ([]Outcome, e
 // transition in the same transaction. It is the one place cases.status is
 // written after the normaliser opens the row, so the lifecycle has a single
 // owner per step.
+//
+// It never moves a case out of a terminal status (won, lost, settled,
+// refunded); only RecordOutcome writes those. The evidence builder works from a
+// request published when the case opened, and PayPal can resolve the dispute
+// before that work finishes: without this guard its late "decision_pending"
+// would put a closed dispute back in front of the merchant. The skipped step is
+// still audited, and it is not an error, because nothing went wrong.
 func (s *Store) SetCaseStatus(ctx context.Context, caseID int64, status, actor, event string, detail any) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -437,12 +444,21 @@ func (s *Store) SetCaseStatus(ctx context.Context, caseID int64, status, actor, 
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	tag, err := tx.Exec(ctx,
-		`UPDATE cases SET status = $2, updated_at = now() WHERE id = $1`, caseID, status)
+		`UPDATE cases SET status = $2, updated_at = now()
+		 WHERE id = $1 AND status NOT IN ('won', 'lost', 'settled', 'refunded')`, caseID, status)
 	if err != nil {
 		return fmt.Errorf("set status of case %d: %w", caseID, err)
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+		var current string
+		err := tx.QueryRow(ctx, `SELECT status FROM cases WHERE id = $1`, caseID).Scan(&current)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("read status of case %d: %w", caseID, err)
+		}
+		event = fmt.Sprintf("%s (status left %s: the case is already closed)", event, current)
 	}
 
 	encoded, err := json.Marshal(detail)

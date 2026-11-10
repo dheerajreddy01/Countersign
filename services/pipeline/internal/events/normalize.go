@@ -28,6 +28,10 @@ type Dispute struct {
 	// PayPalStatus is PayPal's own dispute status. The internal case lifecycle
 	// (cases.status) belongs to Countersign and is not derived from it.
 	PayPalStatus string `json:"paypal_status"`
+	// OutcomeCode is PayPal's resource.dispute_outcome.outcome_code, present
+	// once PayPal has resolved the dispute. The case service turns it into a
+	// terminal case status; it is empty for an open dispute.
+	OutcomeCode string `json:"outcome_code,omitempty"`
 
 	Amount   string `json:"amount"`
 	Currency string `json:"currency"`
@@ -136,6 +140,7 @@ func Normalize(raw []byte) (Dispute, error) {
 		Supported:    supported,
 		Stage:        Stage(wh.Resource.DisputeLifeCycleStage),
 		PayPalStatus: strings.ToUpper(strings.TrimSpace(wh.Resource.Status)),
+		OutcomeCode:  strings.ToUpper(strings.TrimSpace(wh.Resource.DisputeOutcome.OutcomeCode)),
 		Amount:       strings.TrimSpace(wh.Resource.DisputeAmount.Value),
 		Currency:     strings.ToUpper(strings.TrimSpace(wh.Resource.DisputeAmount.CurrencyCode)),
 		OccurredAt:   firstTime(wh.CreateTime, wh.Resource.UpdatedTime, wh.Resource.CreateTime),

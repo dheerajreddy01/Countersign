@@ -165,3 +165,44 @@ func TestNormalizeFallsBackToNowWhenNoTimestampParses(t *testing.T) {
 		t.Error("buyer fields should be empty")
 	}
 }
+
+// A RESOLVED webhook says who PayPal resolved the dispute for only in
+// resource.dispute_outcome. The case service closes the case from it, so it has
+// to survive normalisation onto the wire form published on cs.dispute.events;
+// asserting on the JSON, not the struct, checks what the case service sees.
+func TestNormalizeCarriesTheOutcomeCodeOfAResolvedDispute(t *testing.T) {
+	raw := `{"id":"WH-RES-1","event_type":"CUSTOMER.DISPUTE.RESOLVED",
+	         "resource":{"dispute_id":"PP-D-9","status":"RESOLVED",
+	                     "dispute_outcome":{"outcome_code":"resolved_seller_favour",
+	                                        "amount_refunded":{"currency_code":"USD","value":"0.00"}}}}`
+	d, err := Normalize([]byte(raw))
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if wire := wireForm(t, d); wire["outcome_code"] != "RESOLVED_SELLER_FAVOUR" {
+		t.Errorf("outcome_code on the wire = %v, want RESOLVED_SELLER_FAVOUR", wire["outcome_code"])
+	}
+
+	// An open dispute has no outcome, and says so by omitting the field rather
+	// than sending an empty code a consumer might read as a ruling.
+	open, err := Normalize([]byte(disputeCreated))
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if v, present := wireForm(t, open)["outcome_code"]; present {
+		t.Errorf("open dispute carries outcome_code %v, want it omitted", v)
+	}
+}
+
+func wireForm(t *testing.T, d Dispute) map[string]any {
+	t.Helper()
+	encoded, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return wire
+}

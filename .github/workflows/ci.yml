@@ -71,8 +71,9 @@ jobs:
           done
       - name: Integration tests against Postgres
         # -v so the log names every test that ran: a silent skip must not read
-        # as a pass.
-        run: go test -v -tags integration -count=1 ./internal/store/
+        # as a pass. -p 1 because both packages share the one database and the
+        # store tests empty every table between tests.
+        run: go test -v -p 1 -tags integration -count=1 ./internal/store/ ./cmd/caseservice/
         working-directory: services/pipeline
 
   ai:
