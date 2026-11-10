@@ -1,6 +1,6 @@
 # Render Blueprint for Countersign.
 #
-# Nine services plus a managed Postgres, all in one region so they can reach
+# Six services plus a managed Postgres, all in one region so they can reach
 # each other over the private network.
 #
 # The broker runs as a private service with a disk because Render has no
@@ -138,88 +138,28 @@ services:
       # guard keeps in step with the Python service.
 
   # --- the spine ------------------------------------------------------------
-  # A worker, not a private service: it consumes and writes, and nothing needs
-  # to call it. Render cannot route internal traffic to a worker anyway.
-  - type: worker
-    name: countersign-normalizer
-    runtime: docker
-    region: oregon
-    plan: 0.5c-512mb
-    dockerfilePath: ./services/pipeline/Dockerfile
-    dockerContext: ./services/pipeline
-    dockerCommand: /normalizer
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: countersign-postgres
-          property: connectionString
-      - key: REDPANDA_PROXY_HOSTPORT
-        fromService:
-          type: pserv
-          name: countersign-redpanda
-          property: hostport
-
-  # Assembles the evidence bundle, then scores and drafts through the AI
-  # service, for each new case. A worker: it consumes and writes, and nothing
-  # calls it. AI_SERVICE_HOSTPORT comes from the AI service's registry entry
-  # because Blueprints cannot interpolate a URL (see the note at the top).
-  - type: worker
-    name: countersign-evidencebuilder
-    runtime: docker
-    region: oregon
-    plan: 0.5c-512mb
-    dockerfilePath: ./services/pipeline/Dockerfile
-    dockerContext: ./services/pipeline
-    dockerCommand: /evidencebuilder
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: countersign-postgres
-          property: connectionString
-      - key: REDPANDA_PROXY_HOSTPORT
-        fromService:
-          type: pserv
-          name: countersign-redpanda
-          property: hostport
-      - key: AI_SERVICE_HOSTPORT
-        fromService:
-          type: pserv
-          name: countersign-ai
-          property: hostport
-
-  # Carries out approved actions against the PayPal Disputes API. With the two
-  # PAYPAL_* values set below, submissions are real; left unset, the executor
+  # The case service and the three pipeline workers (normalizer, evidence
+  # builder, executor) share one instance, started by /spine
+  # (services/pipeline/cmd/spine). That is a cost decision: as separate
+  # services the workers were three more paid instances doing little between
+  # disputes. The binaries are unchanged and still run one per container under
+  # compose.
+  #
+  # Spine is all-or-nothing: if any child exits, it stops the rest and exits
+  # non-zero, so Render restarts the whole instance rather than leaving a dead
+  # worker behind a green health check. Each line in the log is prefixed with
+  # the child's name, e.g. "[normalizer] normalised …".
+  #
+  # The env below is the union of what the four need; none of them reads a
+  # variable another sets differently. The workers' health servers bind to
+  # loopback (spine's default), and PORT pins 8081 so `hostport`, which the
+  # console reads, names the case service API and not a worker's health port.
+  #
+  # The executor carries out approved actions against the PayPal Disputes API.
+  # With the two PAYPAL_* values set, submissions are real; left unset, it
   # simulates every action and labels the outcome. The terminal win/lost/settled
   # ruling is always simulated and labeled: a real sandbox ruling can take days,
   # so the board would otherwise never reach a final state in a demo.
-  - type: worker
-    name: countersign-executor
-    runtime: docker
-    region: oregon
-    plan: 0.5c-512mb
-    dockerfilePath: ./services/pipeline/Dockerfile
-    dockerContext: ./services/pipeline
-    dockerCommand: /executor
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: countersign-postgres
-          property: connectionString
-      - key: REDPANDA_PROXY_HOSTPORT
-        fromService:
-          type: pserv
-          name: countersign-redpanda
-          property: hostport
-      - key: PAYPAL_API_BASE
-        value: https://api-m.sandbox.paypal.com
-      - key: EXECUTOR_SIMULATE_RULING
-        value: "true"
-      - key: PAYPAL_CLIENT_ID
-        sync: false
-      - key: PAYPAL_CLIENT_SECRET
-        sync: false
-
-  # Consumes dispute events and serves the read API the console reads.
   - type: pserv
     name: countersign-caseservice
     runtime: docker
@@ -227,9 +167,11 @@ services:
     plan: 0.5c-512mb
     dockerfilePath: ./services/pipeline/Dockerfile
     dockerContext: ./services/pipeline
-    dockerCommand: /caseservice
+    dockerCommand: /spine
     envVars:
       - fromGroup: countersign-secrets
+      - key: PORT
+        value: "8081"
       - key: CASE_SERVICE_ADDR
         value: ":8081"
       - key: DATABASE_URL
@@ -241,6 +183,21 @@ services:
           type: pserv
           name: countersign-redpanda
           property: hostport
+      # Evidence builder: scores and drafts through the AI service.
+      - key: AI_SERVICE_HOSTPORT
+        fromService:
+          type: pserv
+          name: countersign-ai
+          property: hostport
+      # Executor.
+      - key: PAYPAL_API_BASE
+        value: https://api-m.sandbox.paypal.com
+      - key: EXECUTOR_SIMULATE_RULING
+        value: "true"
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
 
   # The mandate ledger. MANDATE_SIGNING_KEY must be set and must then never
   # change: unset, the service mints a throwaway key per boot and every mandate
