@@ -78,11 +78,16 @@ services:
   # --- public: PayPal posts here -------------------------------------------
   # The one service that must be reachable from outside, and the reason to
   # deploy at all: a stable HTTPS URL that does not die with a local tunnel.
+  # Free instance type: nothing calls the gateway over the private network, it
+  # only receives PayPal's public POSTs, and a free service may still *send*
+  # private requests (to the broker). The cost is a 15-minute idle spin-down and
+  # a ~1 minute cold start, so the first webhook after a quiet spell can time
+  # out — PayPal retries, and `curl /healthz` before a demo wakes it on purpose.
   - type: web
     name: countersign-gateway
     runtime: docker
     region: oregon
-    plan: 0.5c-512mb
+    plan: free
     dockerfilePath: ./services/gateway/Dockerfile
     dockerContext: ./services/gateway
     healthCheckPath: /healthz
@@ -111,11 +116,13 @@ services:
   # --- public: the merchant console ----------------------------------------
   # Behind basic auth (web/middleware.ts), because it shows every dispute.
   # /healthz is outside that gate so this health check does not 401.
+  # Free: same reasoning as the gateway. A browser waiting a minute for the
+  # first page load is a fair trade for a third of the monthly bill.
   - type: web
     name: countersign-console
     runtime: docker
     region: oregon
-    plan: 0.5c-512mb
+    plan: free
     dockerfilePath: ./web/Dockerfile
     dockerContext: ./web
     healthCheckPath: /healthz
@@ -256,7 +263,7 @@ services:
     name: countersign-mandate
     runtime: docker
     region: oregon
-    plan: 0.5c-512mb
+    plan: free
     dockerfilePath: ./services/pipeline/Dockerfile
     dockerContext: ./services/pipeline
     dockerCommand: /mandate

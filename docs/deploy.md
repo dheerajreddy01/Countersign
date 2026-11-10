@@ -158,19 +158,39 @@ Approximate monthly list prices — check the dashboard, these move:
 | | Plan | ~/month |
 |---|---|---|
 | redpanda | `1c-2g` | $25 |
-| 8 × small services | `0.5c-512mb` | $56 |
+| 5 × small services | `0.5c-512mb` | $35 |
+| gateway, console, mandate | `free` | $0 |
 | Postgres | `0.1c-256mb` | $6 |
 | disk | 1 GB | $0.25 |
-| | | **~$87** |
+| | | **~$66** |
+
+The three public services run on the free instance type. Nothing calls them
+over the private network — they take public requests and *send* private ones,
+which a free service may do — and none of them needs a disk, which a free
+service cannot have. What it costs: a free service spins down after 15 idle
+minutes and takes about a minute to wake, so the first webhook or page load
+after a quiet spell is slow or dropped. PayPal retries; for a demo, `curl
+/healthz` on the gateway a minute beforehand. Free instances also share a
+750-hour monthly pool per workspace, which spin-down keeps this well inside.
+
+Two further levers, both deliberately not pulled here because they would make
+the stack less reliable during the testing it exists for:
+
+- **Postgres on the `free` plan** saves the $6, but a free database is capped
+  at 1 GB and expires 30 days after creation, taking the board's data with it.
+- **redpanda on `0.5c-512mb`** saves $18, but Redpanda wants ~1 GB and tunes
+  itself for a dedicated box; on 512 MB it starts only with careful `--memory`
+  flags and may still be killed under load. A broker that dies mid-demo costs
+  more than $18.
 
 ### Keeping the bill down
 
-$87/month is about **$0.12/hour**, so $50 of credit is roughly **415 hours** —
-17 days if the stack runs continuously, and it has no reason to. Billing is
+$66/month is about **$0.09/hour**, so $50 of credit is roughly **550 hours** —
+23 days if the stack runs continuously, and it has no reason to. Billing is
 prorated by the minute, so the credit stretches to a hundred-odd demo sessions
 if the services are suspended in between:
 
-- **Suspend the eight services after each session** (Settings → Suspend, or the
+- **Suspend the five paid services after each session** (Settings → Suspend, or the
   dashboard's bulk action). Resuming takes a minute or two, which is the whole
   cost of doing this.
 - **Postgres cannot be suspended** and neither can a disk stop billing, so the
