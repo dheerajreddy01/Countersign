@@ -42,7 +42,7 @@ repository, and Render reads `render.yaml`. It will prompt for the values marked
 |---|---|
 | `PAYPAL_CLIENT_ID` | your local `.env` (the sandbox REST app) |
 | `PAYPAL_CLIENT_SECRET` | same |
-| `PAYPAL_WEBHOOK_ID` | leave blank for now — step 3 creates it |
+| `PAYPAL_WEBHOOK_ID` | a placeholder for now (see below) — step 3 creates the real one |
 | `MANDATE_SIGNING_KEY` | generate it, see below |
 | `CONSOLE_PASSWORD` | choose one; the username defaults to `merchant` |
 | `GROQ_API_KEY` | your local `.env` (https://console.groq.com/keys) |
@@ -62,6 +62,16 @@ The gateway **refuses to start** without the three `PAYPAL_*` values, which is
 deliberate: a gateway that cannot verify a signature would reject every
 delivery, and discovering that from the first rejected dispute is worse than
 failing to boot.
+
+That check only asks that `PAYPAL_WEBHOOK_ID` is non-empty, which matters on
+the first apply: the real id does not exist until the gateway has a URL (step
+3). Left blank, the gateway's first deploy fails — harmless, since Render
+assigns the URL anyway, but it reads like a broken Blueprint. To avoid that,
+put any placeholder in for now: the id from your local `.env` (the old tunnel
+subscription) or just `pending`. The gateway boots, and every webhook it
+receives is rejected with `verification_status "FAILURE"` until step 3 swaps
+in the real id — which is correct, because nothing is subscribed to the new
+URL yet anyway.
 
 ### The mandate signing key is not optional
 
