@@ -82,6 +82,8 @@ interface ApiCase {
   // from the mandates it fetched, so a summary can report a mandate without
   // carrying the mandate itself.
   has_mandate?: boolean;
+  /** The persisted decision; served on list rows, null before scoring. */
+  decision?: ApiDecision | null;
 }
 
 interface ApiAuditEntry {
@@ -359,14 +361,15 @@ function mapCase(
   const amount = Number.parseFloat(api.amount) || 0;
   const reason = oneOf(api.reason, REASONS, "other");
   const mandate = mapMandate(mandates);
-  // The board reads the list endpoint, which has the flag but not the mandate
-  // itself. Scoring off the flag keeps one case from showing two different
-  // win probabilities in the table and on its own page.
+  // Only used by the estimate below, for a case not yet scored: the list
+  // endpoint carries the mandate flag but not the mandate itself.
   const mandateMatching = mandate !== null || api.has_mandate === true;
 
-  // Use the persisted decision when the scorer has run; otherwise the mirror's
-  // floor estimate, with the signals the evidence builder would supply passed
-  // as false rather than guessed.
+  // Use the persisted decision when the scorer has run, for the list exactly as
+  // for the case page, so one case cannot show two verdicts. Only before the
+  // evidence builder has scored it (seconds, normally) fall back to the
+  // mirror's floor estimate, with the evidence signals passed as false rather
+  // than guessed.
   const decision = parts.decision
     ? mapLiveDecision(parts.decision, amount)
     : scoreDecision({
@@ -424,7 +427,7 @@ export async function fetchSummaries(): Promise<CaseSummary[]> {
   // toSummary infers hasMandate from the mandate object, which the list
   // endpoint does not carry, so take it from the flag instead.
   return rows.map((row) => ({
-    ...toSummary(mapCase(row, [], [])),
+    ...toSummary(mapCase(row, [], [], { decision: row.decision ?? null })),
     hasMandate: row.has_mandate === true,
   }));
 }

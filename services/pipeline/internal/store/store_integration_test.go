@@ -467,3 +467,48 @@ func TestRecordOutcomeIsIdempotentPerEventKey(t *testing.T) {
 		t.Errorf("outcomes = %d, want 3 (keyless outcomes must not dedupe)", len(outs))
 	}
 }
+
+// The list carries each case's persisted decision, so the console's table shows
+// the verdict the pipeline reached instead of re-scoring the case blind. A case
+// not yet scored lists with no decision rather than an invented one.
+func TestListCasesCarriesThePersistedDecision(t *testing.T) {
+	s, ctx := newTestStore(t)
+
+	scored, _, err := s.UpsertCase(ctx, testDispute("PP-D-SCORED"))
+	if err != nil {
+		t.Fatalf("UpsertCase: %v", err)
+	}
+	if _, _, err := s.UpsertCase(ctx, testDispute("PP-D-UNSCORED")); err != nil {
+		t.Fatalf("UpsertCase: %v", err)
+	}
+	factors := json.RawMessage(`{"p_win":0.93,"recommendation":"fight"}`)
+	if err := s.SaveDecision(ctx, scored.ID, factors, "113.57", "fight"); err != nil {
+		t.Fatalf("SaveDecision: %v", err)
+	}
+
+	list, err := s.ListCases(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListCases: %v", err)
+	}
+	byDispute := map[string]ListedCase{}
+	for _, lc := range list {
+		byDispute[lc.PayPalDisputeID] = lc
+	}
+
+	got := byDispute["PP-D-SCORED"].Decision
+	if got == nil {
+		t.Fatal("scored case listed without its decision")
+	}
+	if got.Recommendation != "fight" || got.EV != "113.57" || got.CaseID != scored.ID {
+		t.Errorf("decision = %+v", got)
+	}
+	var f struct {
+		PWin float64 `json:"p_win"`
+	}
+	if err := json.Unmarshal(got.Factors, &f); err != nil || f.PWin != 0.93 {
+		t.Errorf("factors = %s (p_win %v, err %v)", got.Factors, f.PWin, err)
+	}
+	if d := byDispute["PP-D-UNSCORED"].Decision; d != nil {
+		t.Errorf("unscored case listed with a decision: %+v", d)
+	}
+}
