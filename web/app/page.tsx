@@ -2,6 +2,7 @@ import Link from "next/link";
 import { CaseTable } from "@/components/CaseTable";
 import { DeadlineBoard } from "@/components/DeadlineBoard";
 import { StatStrip, type Stat } from "@/components/StatStrip";
+import { isClosed } from "@/lib/board";
 import { formatMoney } from "@/lib/format";
 import { loadSummaries } from "@/lib/data";
 
@@ -12,9 +13,7 @@ export default async function DashboardPage() {
   const cases = await loadSummaries();
   const now = Date.now();
 
-  const openCases = cases.filter(
-    (c) => !["won", "lost", "refunded", "settled"].includes(c.status),
-  );
+  const openCases = cases.filter((c) => !isClosed(c.status));
   const needsReview = cases.filter((c) => c.status === "decision_pending");
   const overdue = openCases.filter(
     (c) => c.respondBy !== null && new Date(c.respondBy).getTime() < now,
@@ -56,7 +55,7 @@ export default async function DashboardPage() {
             Deadline board
           </h2>
           <p className="text-xs text-slate-400">
-            Bucketed by respond-by date · colored by urgency
+            Open cases by respond-by date · colored by urgency
           </p>
         </div>
         <DeadlineBoard cases={cases} />
