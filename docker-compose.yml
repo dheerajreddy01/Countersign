@@ -23,7 +23,7 @@ services:
       retries: 10
 
   redpanda:
-    image: docker.redpanda.com/redpandadata/redpanda:v24.2.7
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.27
     command:
       - redpanda
       - start
@@ -43,7 +43,7 @@ services:
       retries: 20
 
   redpanda-init:
-    image: docker.redpanda.com/redpandadata/redpanda:v24.2.7
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.27
     depends_on:
       redpanda:
         condition: service_healthy
