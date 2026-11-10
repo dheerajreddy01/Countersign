@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,56 @@ type fakeProxy struct {
 	subscribed   []string
 	deleted      bool
 	pollFailures int // fail this many polls before serving records
+
+	// Topic existence, as GET /topics reports it. nil means "every topic the
+	// pipeline uses exists", which is what the older tests assume.
+	topics []string
+	// Answer GET /topics with no topics this many times first, the way a broker
+	// that has just booted does before anything has created them.
+	topicsMissingFor int
+	topicChecks      int
+	// Subscriptions made while a requested topic was missing. A real broker
+	// accepts those and then never assigns the member anything.
+	subscribedEarly int
+
+	// Live consumer instances. restart() forgets them all, as a broker restart
+	// does; polling a forgotten one is pandaproxy's 404 / 40403.
+	instances map[string]bool
+	created   int
+}
+
+// restart forgets every consumer instance, as a Redpanda restart does.
+func (f *fakeProxy) restart() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.instances = map[string]bool{}
+}
+
+func (f *fakeProxy) topicExists(name string) bool {
+	if f.topicChecks <= f.topicsMissingFor {
+		return false
+	}
+	if f.topics == nil {
+		return true
+	}
+	for _, t := range f.topics {
+		if t == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *fakeProxy) liveInstance(w http.ResponseWriter, r *http.Request) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.instances[r.PathValue("id")] {
+		w.Header().Set("Content-Type", consumerContentType)
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error_code":40403,"message":"Consumer instance not found"}`))
+		return false
+	}
+	return true
 }
 
 // wrongMediaType mimics pandaproxy's 415: the consumer-management paths take
@@ -50,12 +101,38 @@ func (f *fakeProxy) server(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("GET /topics", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.topicChecks++
+		var names []string
+		for _, t := range []string{TopicWebhooksRaw, TopicDisputeEvents, TopicEvidenceRequested,
+			TopicCaseReady, TopicDecisionPending, TopicActionRequested, TopicOutcomes, TopicDLQ} {
+			if f.topicExists(t) {
+				names = append(names, t)
+			}
+		}
+		f.mu.Unlock()
+		if names == nil {
+			names = []string{}
+		}
+		w.Header().Set("Content-Type", consumerContentType)
+		_ = json.NewEncoder(w).Encode(names)
+	})
+
 	mux.HandleFunc("POST /consumers/{group}", func(w http.ResponseWriter, r *http.Request) {
 		if wrongMediaType(t, w, r, "Content-Type", consumerContentType) {
 			return
 		}
+		f.mu.Lock()
+		f.created++
+		id := fmt.Sprintf("inst-%d", f.created)
+		if f.instances == nil {
+			f.instances = map[string]bool{}
+		}
+		f.instances[id] = true
+		f.mu.Unlock()
 		w.Header().Set("Content-Type", consumerContentType)
-		_, _ = w.Write([]byte(`{"instance_id":"inst-1","base_uri":"http://unreachable.invalid/x"}`))
+		_, _ = fmt.Fprintf(w, `{"instance_id":%q,"base_uri":"http://unreachable.invalid/x"}`, id)
 	})
 
 	mux.HandleFunc("POST /consumers/{group}/instances/{id}/subscription",
@@ -63,10 +140,18 @@ func (f *fakeProxy) server(t *testing.T) *httptest.Server {
 			if wrongMediaType(t, w, r, "Content-Type", consumerContentType) {
 				return
 			}
+			if !f.liveInstance(w, r) {
+				return
+			}
 			var body struct{ Topics []string }
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			f.mu.Lock()
 			f.subscribed = body.Topics
+			for _, topic := range body.Topics {
+				if !f.topicExists(topic) {
+					f.subscribedEarly++
+				}
+			}
 			f.mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
 		})
@@ -74,6 +159,9 @@ func (f *fakeProxy) server(t *testing.T) *httptest.Server {
 	mux.HandleFunc("GET /consumers/{group}/instances/{id}/records",
 		func(w http.ResponseWriter, r *http.Request) {
 			if wrongMediaType(t, w, r, "Accept", recordsContentType) {
+				return
+			}
+			if !f.liveInstance(w, r) {
 				return
 			}
 			f.mu.Lock()
@@ -110,10 +198,18 @@ func (f *fakeProxy) server(t *testing.T) *httptest.Server {
 			w.WriteHeader(http.StatusNoContent)
 		})
 
+	// DELETE is checked like every other consumer-management path. It was the
+	// one route the fake waved through, and the real proxy refuses it with 415
+	// when the type is missing, so Close failed against every real broker while
+	// passing here.
 	mux.HandleFunc("DELETE /consumers/{group}/instances/{id}",
 		func(w http.ResponseWriter, r *http.Request) {
+			if wrongMediaType(t, w, r, "Content-Type", consumerContentType) {
+				return
+			}
 			f.mu.Lock()
 			f.deleted = true
+			delete(f.instances, r.PathValue("id"))
 			f.mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
 		})
@@ -241,8 +337,8 @@ func TestConsumerSubscribesPollsAndCommits(t *testing.T) {
 	f.mu.Lock()
 	deleted := f.deleted
 	f.mu.Unlock()
-	if !deleted {
-		t.Error("Close should delete the consumer instance")
+	if deleted {
+		t.Error("Close must not delete the instance: on Redpanda v24.2 that hangs the broker")
 	}
 }
 
@@ -410,5 +506,215 @@ func TestRunRetriesAfterAPollFailure(t *testing.T) {
 		}
 	case <-time.After(8 * time.Second):
 		t.Fatal("Run did not recover from a transient poll failure")
+	}
+}
+
+// fastTopicPoll shortens the topic re-check interval for one test.
+func fastTopicPoll(t *testing.T) {
+	t.Helper()
+	old := topicPollInterval
+	topicPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { topicPollInterval = old })
+}
+
+// On Render every service boots in parallel with the broker, so a consumer
+// routinely arrives before its topics exist. A real pandaproxy accepts that
+// subscription and assigns the member nothing, forever: no error, a passing
+// health check, and not one record consumed. The consumer must not subscribe
+// until the topics are there.
+func TestConsumerWaitsForItsTopicsBeforeSubscribing(t *testing.T) {
+	fastTopicPoll(t)
+	f := &fakeProxy{topicsMissingFor: 3}
+	srv := f.server(t)
+
+	if _, err := NewConsumer(context.Background(), srv.URL, "g", []string{TopicWebhooksRaw}); err != nil {
+		t.Fatalf("NewConsumer: %v", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.subscribedEarly != 0 {
+		t.Errorf("subscribed %d time(s) to a topic that did not exist yet", f.subscribedEarly)
+	}
+	if f.topicChecks < 4 {
+		t.Errorf("checked for topics %d times, want it to keep checking until they appear", f.topicChecks)
+	}
+	if len(f.subscribed) != 1 {
+		t.Errorf("never subscribed once the topic existed: %v", f.subscribed)
+	}
+}
+
+func TestConsumerWaitsOnlyForTheTopicsItNeeds(t *testing.T) {
+	fastTopicPoll(t)
+	f := &fakeProxy{topics: []string{TopicOutcomes}}
+	srv := f.server(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err := NewConsumer(ctx, srv.URL, "g", []string{TopicOutcomes, TopicDisputeEvents})
+	if err == nil {
+		t.Fatal("NewConsumer returned while cs.dispute.events was still missing")
+	}
+	if !strings.Contains(err.Error(), TopicDisputeEvents) || strings.Contains(err.Error(), TopicOutcomes+" ") {
+		t.Errorf("error should name only the missing topic: %v", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error should wrap the context's: %v", err)
+	}
+}
+
+// A broker that is not up yet is the other half of a parallel boot. Exiting on
+// the first refused connection only works on a platform that restarts the
+// process; waiting works everywhere.
+func TestConsumerWaitsForAProxyThatIsNotUpYet(t *testing.T) {
+	fastTopicPoll(t)
+	f := &fakeProxy{}
+	real := f.server(t)
+
+	var up sync.WaitGroup
+	up.Add(1)
+	refusals := 0
+	var mu sync.Mutex
+	gate := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		if refusals < 3 {
+			refusals++
+			mu.Unlock()
+			http.Error(w, "starting", http.StatusServiceUnavailable)
+			return
+		}
+		mu.Unlock()
+		proxy, _ := http.NewRequestWithContext(r.Context(), r.Method, real.URL+r.URL.RequestURI(), r.Body)
+		proxy.Header = r.Header
+		resp, err := http.DefaultClient.Do(proxy)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		for k, v := range resp.Header {
+			w.Header()[k] = v
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	}))
+	t.Cleanup(gate.Close)
+
+	if _, err := NewConsumer(context.Background(), gate.URL, "g", []string{TopicWebhooksRaw}); err != nil {
+		t.Fatalf("NewConsumer gave up on a proxy that came up: %v", err)
+	}
+}
+
+// After a Redpanda restart every consumer instance id is gone and the proxy
+// answers 404 / 40403 for it. The loop used to retry that same id forever, so
+// one broker restart stopped the whole pipeline behind green health checks.
+func TestPollRecreatesAnInstanceTheBrokerForgot(t *testing.T) {
+	f := &fakeProxy{batches: [][]Record{{
+		{Topic: TopicWebhooksRaw, Key: "WH-after-restart", Value: json.RawMessage(`{}`), Offset: 7},
+	}}}
+	srv := f.server(t)
+	ctx := context.Background()
+
+	c, err := NewConsumer(ctx, srv.URL, "g", []string{TopicWebhooksRaw})
+	if err != nil {
+		t.Fatalf("NewConsumer: %v", err)
+	}
+	f.restart()
+
+	_, err = c.Poll(ctx, 10*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "re-created") {
+		t.Fatalf("first poll after the restart should report the re-creation, got %v", err)
+	}
+	records, err := c.Poll(ctx, 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("poll on the re-created instance: %v", err)
+	}
+	if len(records) != 1 || records[0].Key != "WH-after-restart" {
+		t.Fatalf("records = %+v", records)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.created != 2 {
+		t.Errorf("instances created = %d, want 2", f.created)
+	}
+	if len(f.subscribed) != 1 || f.subscribed[0] != TopicWebhooksRaw {
+		t.Errorf("the new instance was not re-subscribed: %v", f.subscribed)
+	}
+}
+
+func TestRunKeepsConsumingAcrossABrokerRestart(t *testing.T) {
+	f := &fakeProxy{batches: [][]Record{{
+		{Topic: TopicWebhooksRaw, Key: "WH-1", Value: json.RawMessage(`{}`)},
+	}}}
+	srv := f.server(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	c, err := NewConsumer(ctx, srv.URL, "g", []string{TopicWebhooksRaw})
+	if err != nil {
+		t.Fatalf("NewConsumer: %v", err)
+	}
+	f.restart()
+
+	handled := make(chan string, 1)
+	go func() {
+		_ = Run(ctx, c, NewPublisher(srv.URL), "test", func(_ context.Context, rec Record) error {
+			handled <- rec.Key
+			cancel()
+			return nil
+		}, func(string, ...any) {})
+	}()
+	select {
+	case key := <-handled:
+		if key != "WH-1" {
+			t.Fatalf("handled %q", key)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("Run never recovered from the broker forgetting its consumer instance")
+	}
+}
+
+// Only "instance not found" warrants a new instance. A transient failure must
+// keep the existing one, or every blip would churn the group.
+func TestOnlyALostInstanceIsRecreated(t *testing.T) {
+	f := &fakeProxy{pollFailures: 2}
+	srv := f.server(t)
+	ctx := context.Background()
+	c, err := NewConsumer(ctx, srv.URL, "g", []string{TopicWebhooksRaw})
+	if err != nil {
+		t.Fatalf("NewConsumer: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := c.Poll(ctx, time.Millisecond); err == nil || IsInstanceGone(err) {
+			t.Fatalf("poll %d: want a transient error, got %v", i, err)
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.created != 1 {
+		t.Errorf("instances created = %d after transient failures, want 1", f.created)
+	}
+}
+
+// Close leaves the instance for the broker to expire. Deleting it hangs Redpanda
+// v24.2 at 100% CPU once the consumer has been running a while (reproduced in the
+// compose stack on .7 and .27); expiry was tested the same way and is safe.
+func TestCloseLeavesTheInstanceForTheBrokerToExpire(t *testing.T) {
+	f := &fakeProxy{}
+	srv := f.server(t)
+	ctx := context.Background()
+	c, err := NewConsumer(ctx, srv.URL, "g", []string{TopicWebhooksRaw})
+	if err != nil {
+		t.Fatalf("NewConsumer: %v", err)
+	}
+	if err := c.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.deleted {
+		t.Error("Close sent a DELETE")
+	}
+	if c.instance != "" {
+		t.Errorf("Close kept using instance %q", c.instance)
 	}
 }

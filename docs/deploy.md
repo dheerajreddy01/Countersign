@@ -25,9 +25,12 @@ Two details worth knowing before you read the steps. Render assigns internal
 hostnames at deploy time with a generated suffix, and Blueprints cannot build a
 string, so addresses are injected with `fromService` as `host:port` and the
 services accept a `*_HOSTPORT` variable alongside the URL form. And topics are
-created on demand (`auto_create_topics_enabled`) instead of by an init job,
-because a Blueprint has no one-off task; the cost is one partition per topic
-instead of three, which does not matter at demo volume.
+created by the broker itself at boot (`infra/redpanda/render-start.sh`, running
+the same `create-topics.sh` as compose's init job), because a Blueprint has no
+one-off task and the HTTP proxy never creates a topic on produce — whatever
+`auto_create_topics_enabled` says. Workers wait for their topics before
+subscribing; a subscription made to a topic that does not exist yet is assigned
+nothing, ever, behind a passing health check.
 
 ## 1. Apply the Blueprint
 

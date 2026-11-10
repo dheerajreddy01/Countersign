@@ -11,7 +11,10 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -465,5 +468,149 @@ func TestRecordOutcomeIsIdempotentPerEventKey(t *testing.T) {
 	}
 	if outs, _ = s.OutcomesForCase(ctx, c.ID); len(outs) != 3 {
 		t.Errorf("outcomes = %d, want 3 (keyless outcomes must not dedupe)", len(outs))
+	}
+}
+
+// The list carries each case's persisted decision, so the console's table shows
+// the verdict the pipeline reached instead of re-scoring the case blind. A case
+// not yet scored lists with no decision rather than an invented one.
+func TestListCasesCarriesThePersistedDecision(t *testing.T) {
+	s, ctx := newTestStore(t)
+
+	scored, _, err := s.UpsertCase(ctx, testDispute("PP-D-SCORED"))
+	if err != nil {
+		t.Fatalf("UpsertCase: %v", err)
+	}
+	if _, _, err := s.UpsertCase(ctx, testDispute("PP-D-UNSCORED")); err != nil {
+		t.Fatalf("UpsertCase: %v", err)
+	}
+	factors := json.RawMessage(`{"p_win":0.93,"recommendation":"fight"}`)
+	if err := s.SaveDecision(ctx, scored.ID, factors, "113.57", "fight"); err != nil {
+		t.Fatalf("SaveDecision: %v", err)
+	}
+
+	list, err := s.ListCases(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListCases: %v", err)
+	}
+	byDispute := map[string]ListedCase{}
+	for _, lc := range list {
+		byDispute[lc.PayPalDisputeID] = lc
+	}
+
+	got := byDispute["PP-D-SCORED"].Decision
+	if got == nil {
+		t.Fatal("scored case listed without its decision")
+	}
+	if got.Recommendation != "fight" || got.EV != "113.57" || got.CaseID != scored.ID {
+		t.Errorf("decision = %+v", got)
+	}
+	var f struct {
+		PWin float64 `json:"p_win"`
+	}
+	if err := json.Unmarshal(got.Factors, &f); err != nil || f.PWin != 0.93 {
+		t.Errorf("factors = %s (p_win %v, err %v)", got.Factors, f.PWin, err)
+	}
+	if d := byDispute["PP-D-UNSCORED"].Decision; d != nil {
+		t.Errorf("unscored case listed with a decision: %+v", d)
+	}
+}
+
+// Each request mints its own idempotency key, so the key cannot stop a
+// double-click. The database has to: concurrent inserts for the same case must
+// let exactly one through while it is still 'requested', and free the slot
+// once the executor has finished with it.
+func TestOnlyOneRequestedActionPerCase(t *testing.T) {
+	s, ctx := newTestStore(t)
+	c, _, err := s.UpsertCase(ctx, testDispute("PP-D-DOUBLE"))
+	if err != nil {
+		t.Fatalf("UpsertCase: %v", err)
+	}
+	other, _, err := s.UpsertCase(ctx, testDispute("PP-D-OTHER"))
+	if err != nil {
+		t.Fatalf("UpsertCase other: %v", err)
+	}
+
+	const clicks = 5
+	errs := make([]error, clicks)
+	oks := make([]bool, clicks)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < clicks; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			oks[i], errs[i] = s.InsertAction(ctx, Action{
+				IdempotencyKey: fmt.Sprintf("act-double-%d", i), CaseID: c.ID, Kind: "accept_claim",
+			})
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	var winner string
+	for i := range oks {
+		switch {
+		case errs[i] == nil && oks[i]:
+			if winner != "" {
+				t.Errorf("both %s and act-double-%d were recorded as requested", winner, i)
+			}
+			winner = fmt.Sprintf("act-double-%d", i)
+		case !errors.Is(errs[i], ErrActionInFlight):
+			t.Errorf("insert %d: ok=%v err=%v, want ErrActionInFlight", i, oks[i], errs[i])
+		}
+	}
+	if winner == "" {
+		t.Fatal("no insert succeeded")
+	}
+	if acts, _ := s.ActionsForCase(ctx, c.ID); len(acts) != 1 {
+		t.Errorf("actions = %d, want 1", len(acts))
+	}
+
+	// The rule is per case: another case is unaffected.
+	if ok, err := s.InsertAction(ctx, Action{IdempotencyKey: "act-other", CaseID: other.ID, Kind: "make_offer"}); err != nil || !ok {
+		t.Errorf("action on another case: ok=%v err=%v", ok, err)
+	}
+
+	// Once the executor has run the first action, the case is free again.
+	if err := s.UpdateActionResult(ctx, winner, "executed", nil); err != nil {
+		t.Fatalf("UpdateActionResult: %v", err)
+	}
+	if ok, err := s.InsertAction(ctx, Action{IdempotencyKey: "act-next", CaseID: c.ID, Kind: "send_message"}); err != nil || !ok {
+		t.Errorf("action after the first executed: ok=%v err=%v", ok, err)
+	}
+}
+
+// The evidence builder advances a case from a request published when it
+// opened. If PayPal resolved the dispute in the meantime, that late step must
+// not drag the closed case back to decision_pending.
+func TestSetCaseStatusDoesNotReopenAClosedCase(t *testing.T) {
+	s, ctx := newTestStore(t)
+	c, _, err := s.UpsertCase(ctx, testDispute("PP-D-CLOSED"))
+	if err != nil {
+		t.Fatalf("UpsertCase: %v", err)
+	}
+	if _, err := s.RecordOutcome(ctx, OutcomeInput{CaseID: c.ID, Result: "won", Status: "won", EventKey: "paypal:PP-D-CLOSED"}); err != nil {
+		t.Fatalf("RecordOutcome: %v", err)
+	}
+	if err := s.SetCaseStatus(ctx, c.ID, "decision_pending", "evidence-builder", "Scored and drafted", nil); err != nil {
+		t.Fatalf("SetCaseStatus on a closed case should be a no-op, got %v", err)
+	}
+	got, _ := s.GetCase(ctx, c.ID)
+	if got.Status != "won" {
+		t.Errorf("status = %q, want won to survive a late lifecycle step", got.Status)
+	}
+
+	// An open case still advances, and a missing one is still reported.
+	open, _, _ := s.UpsertCase(ctx, testDispute("PP-D-OPEN"))
+	if err := s.SetCaseStatus(ctx, open.ID, "evidence_ready", "evidence-builder", "ready", nil); err != nil {
+		t.Fatalf("SetCaseStatus: %v", err)
+	}
+	if got, _ := s.GetCase(ctx, open.ID); got.Status != "evidence_ready" {
+		t.Errorf("open case status = %q, want evidence_ready", got.Status)
+	}
+	if err := s.SetCaseStatus(ctx, 1<<40, "evidence_ready", "x", "y", nil); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing case: err = %v, want ErrNotFound", err)
 	}
 }

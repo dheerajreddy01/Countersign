@@ -57,4 +57,17 @@ type DisputeResource struct {
 	CreateTime            string                `json:"create_time"`
 	UpdatedTime           string                `json:"updated_time"`
 	DisputedTransactions  []DisputedTransaction `json:"disputed_transactions"`
+	// DisputeOutcome is set once PayPal has closed the dispute, on the
+	// CUSTOMER.DISPUTE.RESOLVED webhook. It is the only place PayPal says who
+	// the dispute was resolved for; status alone just reads RESOLVED.
+	DisputeOutcome DisputeOutcome `json:"dispute_outcome"`
+}
+
+// DisputeOutcome is how PayPal resolved a dispute. OutcomeCode is one of
+// dispute_outcome_code in the Customer Disputes v1 spec (RESOLVED_BUYER_FAVOUR,
+// RESOLVED_SELLER_FAVOUR, RESOLVED_WITH_PAYOUT, CANCELED_BY_BUYER, ACCEPTED,
+// DENIED, NONE).
+type DisputeOutcome struct {
+	OutcomeCode    string `json:"outcome_code"`
+	AmountRefunded Money  `json:"amount_refunded"`
 }

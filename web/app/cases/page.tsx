@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { isClosed } from "@/lib/board";
 import { CaseTable } from "@/components/CaseTable";
 import { formatMoney } from "@/lib/format";
 import { loadSummaries } from "@/lib/data";
@@ -6,15 +7,14 @@ import type { CaseSummary } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-const CLOSED = ["won", "lost", "refunded", "settled"];
 
 type FilterKey = "all" | "review" | "open" | "closed";
 
 const FILTERS: { key: FilterKey; label: string; match: (c: CaseSummary) => boolean }[] = [
   { key: "all", label: "All", match: () => true },
   { key: "review", label: "Needs review", match: (c) => c.status === "decision_pending" },
-  { key: "open", label: "Open", match: (c) => !CLOSED.includes(c.status) },
-  { key: "closed", label: "Closed", match: (c) => CLOSED.includes(c.status) },
+  { key: "open", label: "Open", match: (c) => !isClosed(c.status) },
+  { key: "closed", label: "Closed", match: (c) => isClosed(c.status) },
 ];
 
 function filterFor(value: string | undefined): FilterKey {

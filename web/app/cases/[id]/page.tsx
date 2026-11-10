@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { isClosed } from "@/lib/board";
 import { notFound } from "next/navigation";
 import { ActionBar } from "@/components/ActionBar";
 import {
@@ -18,7 +19,6 @@ import { isLive, loadCase, loadSummaries } from "@/lib/data";
 
 export const dynamic = "force-dynamic";
 
-const CLOSED = ["won", "lost", "refunded", "settled"];
 
 export default async function CasePage({
   params,
@@ -28,7 +28,7 @@ export default async function CasePage({
   const c = await loadCase(params.id);
   if (!c) notFound();
 
-  const closed = CLOSED.includes(c.status);
+  const closed = isClosed(c.status);
   const live = isLive();
 
   // Neighbours come from the same urgency ordering the board and table use, so

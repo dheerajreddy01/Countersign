@@ -124,10 +124,19 @@ func handleDispute(ctx context.Context, db *store.Store, publisher *bus.Publishe
 		return err
 	}
 
+	// UpsertCase records PayPal's status but never touches cases.status, so a
+	// dispute PayPal has closed would otherwise sit on the board waiting for a
+	// merchant decision that can no longer be made.
+	if err := applyPayPalResolution(ctx, db, dispute, c); err != nil {
+		return err
+	}
+
 	// Ask for evidence only when the case is new. An UPDATED webhook for a
 	// dispute already on the board should not rebuild the evidence bundle
-	// behind the merchant's back while they are reading it.
-	if inserted {
+	// behind the merchant's back while they are reading it. Nor is there any
+	// point gathering evidence for a dispute that is already over when
+	// Countersign first hears of it.
+	if inserted && !isPayPalResolution(dispute) {
 		request, err := json.Marshal(map[string]any{
 			"case_id":        c.ID,
 			"dispute_id":     c.PayPalDisputeID,
@@ -145,6 +154,120 @@ func handleDispute(ctx context.Context, db *store.Store, publisher *bus.Publishe
 
 	log.Printf("%s: case %d for dispute %s (inserted=%v)",
 		consumerName, c.ID, c.PayPalDisputeID, inserted)
+	return nil
+}
+
+// terminalStatuses are the case statuses that mean the dispute is over. Nothing
+// is left for the merchant to do on such a case, and nothing more may be sent
+// to PayPal for it.
+var terminalStatuses = map[string]bool{
+	"won":      true,
+	"lost":     true,
+	"settled":  true,
+	"refunded": true,
+}
+
+// isPayPalResolution reports whether PayPal is telling us the dispute is over.
+// The RESOLVED event type is the documented signal; the status check also
+// catches an UPDATED event that happens to carry the resolved dispute.
+func isPayPalResolution(d events.Dispute) bool {
+	return d.EventType == events.TypeDisputeResolved || d.PayPalStatus == "RESOLVED"
+}
+
+// statusForPayPalOutcome maps PayPal's resource.dispute_outcome.outcome_code
+// onto a terminal case status, read from the merchant's side. The second result
+// is false when the code is not a ruling Countersign can stand behind.
+//
+// The codes and their meanings are dispute_outcome_code in PayPal's Customer
+// Disputes v1 spec (developer.paypal.com/docs/api/customer-disputes/v1/):
+//
+//   - RESOLVED_SELLER_FAVOUR, "resolved in the merchant's favor": won.
+//   - RESOLVED_BUYER_FAVOUR, "resolved in the customer's favor": lost. The
+//     merchant has been debited. A merchant who conceded with accept_claim is
+//     already 'refunded', which is the same result said more precisely, so
+//     applyPayPalResolution keeps that rather than relabelling it a loss.
+//   - CANCELED_BY_BUYER, "the customer canceled the dispute": won. The buyer
+//     withdrew and the merchant keeps the money, which is the result a fight
+//     is for, even though no adjudicator ruled.
+//   - RESOLVED_WITH_PAYOUT, "PayPal provided the merchant or customer with
+//     protection": settled. PayPal paid out of its own protection programme;
+//     the spec does not say to whom, so calling it won or lost would invent a
+//     ruling. It is closed, and closed without a verdict on the merits is what
+//     settled means here.
+//   - ACCEPTED (deprecated), "PayPal accepted the dispute": lost. Accepting the
+//     buyer's dispute is finding for the buyer.
+//   - DENIED (deprecated), "PayPal denied the dispute": won.
+//   - NONE, "a dispute was created for the same transaction ID, and the
+//     previous dispute was closed without any decision": no status. There was
+//     no outcome to record, and the money is now argued over in the newer
+//     dispute, which arrives as its own case.
+//
+// Anything else, including an empty code, also returns false: a code this
+// table does not know is not evidence of who won.
+func statusForPayPalOutcome(code string) (string, bool) {
+	switch code {
+	case "RESOLVED_SELLER_FAVOUR", "CANCELED_BY_BUYER", "DENIED":
+		return "won", true
+	case "RESOLVED_BUYER_FAVOUR", "ACCEPTED":
+		return "lost", true
+	case "RESOLVED_WITH_PAYOUT":
+		return "settled", true
+	default: // NONE, empty, or a code PayPal added after this was written
+		return "", false
+	}
+}
+
+// applyPayPalResolution closes a case PayPal reports resolved, by recording the
+// outcome and moving the case to the matching terminal status.
+//
+// PayPal's resolution is the real one, so it overrides whatever the case says,
+// including a simulated ruling the executor already recorded. It goes through
+// RecordOutcome keyed on the dispute and the outcome code, so a redelivered
+// webhook (or PayPal sending RESOLVED twice under different event ids) is a
+// no-op, while a genuinely different outcome for the same dispute still lands.
+func applyPayPalResolution(ctx context.Context, db *store.Store, d events.Dispute, c store.Case) error {
+	if !isPayPalResolution(d) {
+		return nil
+	}
+	status, ok := statusForPayPalOutcome(d.OutcomeCode)
+	if !ok {
+		// Do not guess. The case stays where it is, PayPal's status is already
+		// on the row and in the audit trail, and the log says why it was not
+		// closed.
+		log.Printf("%s: dispute %s resolved by PayPal with outcome code %q, which maps to no ruling; case %d left %s",
+			consumerName, d.DisputeID, d.OutcomeCode, c.ID, c.Status)
+		return nil
+	}
+	if status == "lost" && c.Status == "refunded" {
+		status = "refunded"
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"source":          "paypal",
+		"simulated":       false,
+		"outcome_code":    d.OutcomeCode,
+		"paypal_event_id": d.EventID,
+		"previous_status": c.Status,
+	})
+	if err != nil {
+		return err
+	}
+	inserted, err := db.RecordOutcome(ctx, store.OutcomeInput{
+		CaseID:     c.ID,
+		Result:     status,
+		Status:     status,
+		EventKey:   "paypal:" + d.DisputeID + ":resolved:" + d.OutcomeCode,
+		Payload:    payload,
+		AuditEvent: "PayPal resolved the dispute: " + d.OutcomeCode,
+	})
+	if err != nil {
+		return err
+	}
+	if !inserted {
+		log.Printf("%s: PayPal resolution %s for case %d already recorded, skipping", consumerName, d.OutcomeCode, c.ID)
+		return nil
+	}
+	log.Printf("%s: case %d resolved by PayPal (%s) -> %s", consumerName, c.ID, d.OutcomeCode, status)
 	return nil
 }
 
@@ -207,6 +330,19 @@ func handleOutcome(ctx context.Context, db *store.Store, rec bus.Record) error {
 		eventKey = ev.IdempotencyKey + ":" + ev.Result
 	}
 	status := statusForOutcome(ev.Result)
+
+	// Once PayPal itself has closed the case, its ruling stands. The executor's
+	// outcomes travel on a different topic from PayPal's webhooks, so one can
+	// arrive after the other: a late "submitted" or simulated "won" is still
+	// recorded, but it must not reopen or relabel a case PayPal has decided.
+	current, err := db.GetCase(ctx, caseID)
+	if err != nil {
+		return fmt.Errorf("load case %d: %w", caseID, err)
+	}
+	if current.PayPalStatus == "RESOLVED" && terminalStatuses[current.Status] {
+		status = ""
+	}
+
 	inserted, err := db.RecordOutcome(ctx, store.OutcomeInput{
 		CaseID:     caseID,
 		Result:     ev.Result,
@@ -220,6 +356,11 @@ func handleOutcome(ctx context.Context, db *store.Store, rec bus.Record) error {
 	}
 	if !inserted {
 		log.Printf("%s: outcome %q for case %d already recorded, skipping", consumerName, ev.Result, caseID)
+		return nil
+	}
+	if status == "" {
+		log.Printf("%s: case %d outcome %q (simulated=%v) recorded; status left %s, PayPal already resolved it",
+			consumerName, caseID, ev.Result, ev.Simulated, current.Status)
 		return nil
 	}
 	log.Printf("%s: case %d outcome %q (simulated=%v) -> %s", consumerName, caseID, ev.Result, ev.Simulated, status)
@@ -440,6 +581,17 @@ func actionHandler(db *store.Store, publisher *bus.Publisher, internalToken stri
 			return
 		}
 
+		// A decided case is closed. Any action now is at best noise to PayPal and
+		// at worst moves money for nothing: accept_claim on a case already won
+		// refunds a buyer who lost. A case that is action_taken (submitted, no
+		// ruling yet) is still open, and a follow-up message there is legitimate.
+		if terminalStatuses[c.Status] {
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error": fmt.Sprintf("this case is already closed (%s); no further actions can be taken on it", c.Status),
+			})
+			return
+		}
+
 		// The grounding gate: an action that submits the draft needs a draft that
 		// passed the guard. No draft at all is as disqualifying as a failing one.
 		if needsGrounding[body.Kind] {
@@ -462,6 +614,14 @@ func actionHandler(db *store.Store, publisher *bus.Publisher, internalToken stri
 		inserted, err := db.InsertAction(r.Context(), store.Action{
 			IdempotencyKey: key, CaseID: id, Kind: body.Kind, Note: body.Note,
 		})
+		if errors.Is(err, store.ErrActionInFlight) {
+			// The double-click: the first request is with the executor, and running
+			// a second against PayPal would repeat it.
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error": "another action on this case is still being processed; wait for it to finish before taking another",
+			})
+			return
+		}
 		if err != nil {
 			serverError(w, "insert action", err)
 			return
@@ -479,6 +639,13 @@ func actionHandler(db *store.Store, publisher *bus.Publisher, internalToken stri
 				"currency":        c.Currency,
 			})
 			if err := publisher.Publish(r.Context(), bus.TopicActionRequested, c.PayPalDisputeID, req); err != nil {
+				// The executor will never see this action, so it must not stay
+				// 'requested': that would hold the one-in-flight slot and lock the
+				// merchant out of the case for good.
+				detail, _ := json.Marshal(map[string]any{"error": "could not hand the action to the executor"})
+				if uerr := db.UpdateActionResult(context.WithoutCancel(r.Context()), key, "failed", detail); uerr != nil {
+					log.Printf("%s: release unpublished action %s: %v", consumerName, key, uerr)
+				}
 				serverError(w, "publish action", err)
 				return
 			}
@@ -499,9 +666,9 @@ func subtleCompare(a, b string) int {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b))
 }
 
-// newIdempotencyKey mints a key for an action the console did not supply one
-// for. A console that wants double-click safety sends its own; this is the
-// fallback so the column is never empty.
+// newIdempotencyKey mints the key for a new action. A fresh key per request
+// means the key cannot catch a double-click; the one-requested-action-per-case
+// index (migration 005) is what does.
 func newIdempotencyKey() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {

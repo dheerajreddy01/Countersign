@@ -100,20 +100,6 @@ func scanCase(row pgx.Row) (Case, error) {
 	return c, err
 }
 
-// scanListedCase reads a row from ListCases, which carries the mandate flag
-// after the shared columns.
-func scanListedCase(row pgx.Row) (Case, error) {
-	var c Case
-	err := row.Scan(&c.ID, &c.PayPalDisputeID, &c.Reason, &c.RawReason, &c.ReasonSupported,
-		&c.Stage, &c.Status, &c.PayPalStatus, &c.Amount, &c.Currency, &c.RespondBy,
-		&c.BuyerName, &c.BuyerEmail, &c.ProductName, &c.TransactionID, &c.CreatedAt,
-		&c.UpdatedAt, &c.HasMandate)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Case{}, ErrNotFound
-	}
-	return c, err
-}
-
 // UpsertCase records a dispute, keyed on PayPal's dispute id.
 //
 // PayPal retries webhooks and sends an UPDATED event for the same dispute, so
@@ -200,18 +186,38 @@ func (s *Store) GetCase(ctx context.Context, id int64) (Case, error) {
 		`SELECT `+caseColumns+` FROM cases WHERE id = $1`, id))
 }
 
-// ListCases returns open cases most urgent first.
+// ListedCase is a case as the list endpoint serves it: the row, plus the
+// decision the evidence builder persisted for it, or nil before it has scored.
+//
+// The decision is here so the console's table and board show the verdict the
+// pipeline actually reached. Without it the console scored listed cases itself
+// with every evidence signal unknown, and the same case read 59% in the table
+// and 93% on its own page.
+type ListedCase struct {
+	Case
+	Decision *Decision `json:"decision"`
+}
+
+// ListCases returns cases most urgent first, each with its decision.
 //
 // Cases with no deadline sort last rather than first: a case PayPal has not
 // given a due date for is not the most urgent thing on the merchant's board.
-func (s *Store) ListCases(ctx context.Context, limit int) ([]Case, error) {
+func (s *Store) ListCases(ctx context.Context, limit int) ([]ListedCase, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	// LATERAL with renamed columns rather than a plain join: decisions has its
+	// own created_at, which would make caseColumns ambiguous.
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+caseColumns+`,
-		        EXISTS (SELECT 1 FROM mandates m WHERE m.order_id = transaction_id) AS has_mandate
+		        EXISTS (SELECT 1 FROM mandates m WHERE m.order_id = transaction_id) AS has_mandate,
+		        dec.d_factors, dec.d_ev, dec.d_recommendation, dec.d_created_at
 		 FROM cases
+		 LEFT JOIN LATERAL (
+		     SELECT d.factors AS d_factors, d.ev::text AS d_ev,
+		            d.recommendation AS d_recommendation, d.created_at AS d_created_at
+		     FROM decisions d WHERE d.case_id = cases.id
+		 ) dec ON true
 		 ORDER BY respond_by ASC NULLS LAST, created_at DESC
 		 LIMIT $1`, limit)
 	if err != nil {
@@ -219,13 +225,31 @@ func (s *Store) ListCases(ctx context.Context, limit int) ([]Case, error) {
 	}
 	defer rows.Close()
 
-	cases := make([]Case, 0, limit)
+	cases := make([]ListedCase, 0, limit)
 	for rows.Next() {
-		c, err := scanListedCase(rows)
-		if err != nil {
+		var (
+			lc        ListedCase
+			factors   []byte
+			ev, rec   *string
+			decidedAt *time.Time
+		)
+		c := &lc.Case
+		if err := rows.Scan(&c.ID, &c.PayPalDisputeID, &c.Reason, &c.RawReason, &c.ReasonSupported,
+			&c.Stage, &c.Status, &c.PayPalStatus, &c.Amount, &c.Currency, &c.RespondBy,
+			&c.BuyerName, &c.BuyerEmail, &c.ProductName, &c.TransactionID, &c.CreatedAt,
+			&c.UpdatedAt, &c.HasMandate, &factors, &ev, &rec, &decidedAt); err != nil {
 			return nil, err
 		}
-		cases = append(cases, c)
+		if rec != nil {
+			lc.Decision = &Decision{CaseID: c.ID, Factors: json.RawMessage(factors), Recommendation: *rec}
+			if ev != nil {
+				lc.Decision.EV = *ev
+			}
+			if decidedAt != nil {
+				lc.Decision.CreatedAt = *decidedAt
+			}
+		}
+		cases = append(cases, lc)
 	}
 	return cases, rows.Err()
 }
