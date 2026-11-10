@@ -54,8 +54,14 @@ services:
     runtime: image
     region: oregon
     plan: 1c-2g
+    # Docker Hub, not docker.redpanda.com, which Render cannot pull from: that
+    # host is a pull-through mirror with no standard registry token endpoint, so
+    # the Docker CLI resolves it and Render's image fetcher returns "could not
+    # be fetched". Same image, same tag, canonical registry. docker-compose.yml
+    # deliberately still uses docker.redpanda.com: it pulls fine there and is
+    # not subject to Docker Hub's anonymous pull rate limit in CI.
     image:
-      url: docker.redpanda.com/redpandadata/redpanda:v24.2.7
+      url: docker.io/redpandadata/redpanda:v24.2.7
     dockerCommand: >-
       redpanda start
       --smp 1
