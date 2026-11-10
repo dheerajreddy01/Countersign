@@ -160,14 +160,28 @@ Approximate monthly list prices — check the dashboard, these move:
 | redpanda | `1c-2g` | $25 |
 | 8 × small services | `0.5c-512mb` | $56 |
 | Postgres | `0.1c-256mb` | $6 |
-| disk | 5 GB | $1.25 |
-| | | **~$88** |
+| disk | 1 GB | $0.25 |
+| | | **~$87** |
 
-So $50 of credit is about two weeks of continuous running, or far longer if
-you suspend the services between demos — billing is prorated. Two cautions:
-a disk keeps billing while its service is suspended, and deleting the Postgres
-instance deletes the data with it, so take a `pg_dump` first if you want the
-board back later.
+### Keeping the bill down
+
+$87/month is about **$0.12/hour**, so $50 of credit is roughly **415 hours** —
+17 days if the stack runs continuously, and it has no reason to. Billing is
+prorated by the minute, so the credit stretches to a hundred-odd demo sessions
+if the services are suspended in between:
+
+- **Suspend the eight services after each session** (Settings → Suspend, or the
+  dashboard's bulk action). Resuming takes a minute or two, which is the whole
+  cost of doing this.
+- **Postgres cannot be suspended** and neither can a disk stop billing, so the
+  idle floor is the $6 database plus $0.25 of disk — about **$6.25/month** to
+  keep the board's data alive between demos.
+- **The disk is 1 GB and must stay that way.** Render can grow a disk but never
+  shrink one, so the first apply is the only chance to pick the small size.
+
+Two cautions: a disk keeps billing while its service is suspended, and deleting
+the Postgres instance deletes the data with it, so take a `pg_dump` first if you
+want the board back later.
 
 ## Operating it
 
