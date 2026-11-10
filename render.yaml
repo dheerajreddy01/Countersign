@@ -41,32 +41,28 @@ databases:
 
 services:
   # --- broker ---------------------------------------------------------------
-  # Needs the most memory of anything here. --overprovisioned tells Redpanda it
-  # is sharing a machine, which it must be told explicitly or it tunes itself
-  # for a dedicated box and refuses to start on a small instance.
-  #
-  # Topics are created on demand rather than by an init job: Render has no
-  # one-off task in a Blueprint, and the alternative is a cron job that exists
-  # only to run once. The trade is one partition per topic instead of three,
-  # which is no loss at demo volume.
+  # Needs the most memory of anything here. Built from infra/redpanda rather
+  # than pulled as a plain image, because the broker has to create the
+  # pipeline's topics itself: a Blueprint has no one-off task to do it, and the
+  # HTTP proxy that every service talks through never auto-creates a topic on
+  # produce (auto_create_topics_enabled notwithstanding). The flags live in that
+  # Dockerfile's CMD.
   - type: pserv
     name: countersign-redpanda
-    runtime: image
+    runtime: docker
     region: oregon
     plan: 1c-2g
-    image:
-      url: docker.redpanda.com/redpandadata/redpanda:v24.2.7
-    dockerCommand: >-
-      redpanda start
-      --smp 1
-      --memory 1G
-      --reserve-memory 0M
-      --overprovisioned
-      --kafka-addr 0.0.0.0:9092
-      --advertise-kafka-addr 127.0.0.1:9092
-      --pandaproxy-addr 0.0.0.0:8082
-      --advertise-pandaproxy-addr 127.0.0.1:8082
-      --set redpanda.auto_create_topics_enabled=true
+    dockerfilePath: ./infra/redpanda/Dockerfile
+    dockerContext: ./infra/redpanda
+    envVars:
+      # Redpanda binds five ports (Kafka, the HTTP proxy, the schema registry,
+      # admin, RPC), and every other service finds it through `hostport`,
+      # which carries one. Naming the proxy's port here is what makes that one
+      # the proxy. Each worker logs the address it resolved at startup
+      # ("bus: group … subscribed … via http://…:8082") — check that line on
+      # the first deploy.
+      - key: PORT
+        value: "8082"
     # 1 GB, not 5: a Render disk can be grown later but never shrunk, and it
     # keeps billing while the service is suspended, so the first apply is the
     # only chance to pick the small one. Demo volume is a few thousand events.
