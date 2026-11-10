@@ -16,7 +16,7 @@ deployed gateway has one HTTPS URL that stays.
 | `countersign-evidencebuilder` | worker | Assembles the evidence bundle, then scores and drafts via the AI service. |
 | `countersign-executor` | worker | Carries out approved actions against the PayPal Disputes API; publishes outcomes. |
 | `countersign-caseservice` | private | Consumes dispute events and outcomes, writes cases, serves the read/write API. |
-| `countersign-mandate` | private | The signed, hash-chained mandate ledger. |
+| `countersign-mandate` | web (public) | The signed, hash-chained mandate ledger. Public so a mandate can be recorded against the deployed stack. |
 | `countersign-ai` | private | Scoring and drafting. |
 | `countersign-redpanda` | private + disk | The broker. Render has no managed Kafka. |
 | `countersign-postgres` | database | Cases, evidence, mandates, decisions, drafts, actions, outcomes, audit trail. |
@@ -42,11 +42,18 @@ repository, and Render reads `render.yaml`. It will prompt for the values marked
 | `PAYPAL_WEBHOOK_ID` | leave blank for now — step 3 creates it |
 | `MANDATE_SIGNING_KEY` | generate it, see below |
 | `CONSOLE_PASSWORD` | choose one; the username defaults to `merchant` |
+| `GROQ_API_KEY` | your local `.env` (https://console.groq.com/keys) |
 
 `INTERNAL_API_TOKEN` is not in that list: it is a shared secret the console
 presents to the case service on the action endpoint, and the Blueprint generates
 it once (`envVarGroups`) and injects it into both services, so there is nothing
 to paste and the two always agree.
+
+Leave `GROQ_API_KEY` blank and nothing breaks — but `POST /draft` silently
+falls back to the deterministic template drafter, so the deployed copy shows a
+templated rebuttal while looking perfectly healthy. The grounding guard gates
+the LLM either way, and an ungrounded draft falls back to the template on its
+own.
 
 The gateway **refuses to start** without the three `PAYPAL_*` values, which is
 deliberate: a gateway that cannot verify a signature would reject every
@@ -151,12 +158,12 @@ Approximate monthly list prices — check the dashboard, these move:
 | | Plan | ~/month |
 |---|---|---|
 | redpanda | `1c-2g` | $25 |
-| 5 × small services | `0.5c-512mb` | $35 |
+| 8 × small services | `0.5c-512mb` | $56 |
 | Postgres | `0.1c-256mb` | $6 |
 | disk | 5 GB | $1.25 |
-| | | **~$67** |
+| | | **~$88** |
 
-So $50 of credit is about three weeks of continuous running, or far longer if
+So $50 of credit is about two weeks of continuous running, or far longer if
 you suspend the services between demos — billing is prorated. Two cautions:
 a disk keeps billing while its service is suspended, and deleting the Postgres
 instance deletes the data with it, so take a `pg_dump` first if you want the
@@ -196,7 +203,11 @@ boundaries are worth stating plainly, because the demo leans on them:
   synthesises those records and marks each `"demo": true`
   (`services/pipeline/internal/evidence`). The mandate is the exception: it is a
   real signed, hash-chained record, and its scoring signal reflects an actual
-  `Verify`/`Covers` check, not a staged value.
+  `Verify`/`Covers` check, not a staged value. Recording one against the
+  deployed stack means pointing `cmd/demoagent` at the mandate service's public
+  URL (`MANDATE_SERVICE_URL`) before the dispute is opened, against the same
+  order id; with no mandate on file the signal reads absent, which is a correct
+  answer rather than a broken one.
 - **The submission is real, the verdict is labeled.** With the two `PAYPAL_*`
   values set on `countersign-executor`, an approved action is a real call to the
   PayPal Disputes API, which moves a sandbox dispute to *under review* — it does

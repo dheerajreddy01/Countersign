@@ -17,7 +17,7 @@
 #
 # Three steps remain after the first apply, all in docs/deploy.md:
 #   1. paste the values marked `sync: false` (PayPal credentials, the mandate
-#      signing key, the console password)
+#      signing key, the console password, the Groq API key)
 #   2. apply the schema with infra/postgres/migrate.sh
 #   3. re-register the PayPal webhook at the gateway's new URL
 
@@ -239,7 +239,17 @@ services:
   # The mandate ledger. MANDATE_SIGNING_KEY must be set and must then never
   # change: unset, the service mints a throwaway key per boot and every mandate
   # signed with the previous one stops verifying.
-  - type: pserv
+  #
+  # A web service rather than a private one, which is the only way a mandate
+  # can be recorded against the deployed stack: cmd/demoagent posts to
+  # MANDATE_SERVICE_URL from outside Render, a Blueprint has no one-off task to
+  # run it from inside, and with this private the mandate signal would always
+  # read "absent" in the deployed demo — the one signal docs/deploy.md calls
+  # real. The trade is that POST /mandates is then publicly callable, so the
+  # ledger accepts records from anyone who finds the URL. Acceptable for a
+  # sandbox demo and not beyond it; a real deployment puts this behind the same
+  # shared-secret check as the case service action endpoint.
+  - type: web
     name: countersign-mandate
     runtime: docker
     region: oregon
@@ -247,9 +257,11 @@ services:
     dockerfilePath: ./services/pipeline/Dockerfile
     dockerContext: ./services/pipeline
     dockerCommand: /mandate
+    healthCheckPath: /healthz
     envVars:
+      # Render routes to the port in $PORT, which is 10000.
       - key: MANDATE_SERVICE_ADDR
-        value: ":8082"
+        value: ":10000"
       - key: DATABASE_URL
         fromDatabase:
           name: countersign-postgres
@@ -274,3 +286,11 @@ services:
       # artifact in the repo to point at.
       - key: FRAUD_MODEL_PATH
         value: ""
+      # Unset, POST /draft uses the deterministic template drafter and the
+      # grounded-LLM half of the stack is dead on the deployed copy while
+      # looking healthy. Set it and the LLM writes the rebuttal, with the
+      # grounding guard still gating the result. GROQ_MODEL is left unset: the
+      # default in services/ai/app/llm.py is checked against Groq's served
+      # list, and an ungrounded or failed draft falls back to the template.
+      - key: GROQ_API_KEY
+        sync: false
