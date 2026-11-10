@@ -398,3 +398,72 @@ func TestAppendAuditWithoutACase(t *testing.T) {
 		t.Fatalf("AppendAudit: %v", err)
 	}
 }
+
+// RecordOutcome is the only path by which a case reaches a final state, and it
+// went untested here while its insert could never succeed: ON CONFLICT against
+// a partial unique index needs the index predicate repeated, and without it
+// Postgres rejects every call with 42P10. The executor publishes a "submitted"
+// outcome and then a terminal ruling, and the case service can redeliver
+// either, so the property that matters is: each event key lands exactly once,
+// and a redelivery neither duplicates the row nor re-advances the status.
+func TestRecordOutcomeIsIdempotentPerEventKey(t *testing.T) {
+	s, ctx := newTestStore(t)
+
+	c, _, err := s.UpsertCase(ctx, testDispute("PP-D-OUTCOME"))
+	if err != nil {
+		t.Fatalf("UpsertCase: %v", err)
+	}
+
+	first := OutcomeInput{
+		CaseID:   c.ID,
+		Result:   "won",
+		Status:   "won",
+		EventKey: "act-1:ruling",
+		Payload:  json.RawMessage(`{"simulated":true}`),
+	}
+	recorded, err := s.RecordOutcome(ctx, first)
+	if err != nil {
+		t.Fatalf("RecordOutcome: %v", err)
+	}
+	if !recorded {
+		t.Fatal("first delivery should record the outcome")
+	}
+
+	// Redelivery of the same event: a no-op, and it must not move the status
+	// even if the redelivered copy disagrees.
+	again := first
+	again.Status = "lost"
+	recorded, err = s.RecordOutcome(ctx, again)
+	if err != nil {
+		t.Fatalf("RecordOutcome redelivery: %v", err)
+	}
+	if recorded {
+		t.Error("redelivery with the same event key should be a no-op")
+	}
+
+	outs, err := s.OutcomesForCase(ctx, c.ID)
+	if err != nil {
+		t.Fatalf("OutcomesForCase: %v", err)
+	}
+	if len(outs) != 1 {
+		t.Fatalf("outcomes = %d, want 1", len(outs))
+	}
+	got, err := s.GetCase(ctx, c.ID)
+	if err != nil {
+		t.Fatalf("GetCase: %v", err)
+	}
+	if got.Status != "won" {
+		t.Errorf("Status = %q, want won (redelivery must not re-advance it)", got.Status)
+	}
+
+	// Outcomes without an event key are not deduplicated against each other:
+	// the index is partial precisely so they never collide.
+	for i := 0; i < 2; i++ {
+		if _, err := s.RecordOutcome(ctx, OutcomeInput{CaseID: c.ID, Result: "note"}); err != nil {
+			t.Fatalf("RecordOutcome without key #%d: %v", i, err)
+		}
+	}
+	if outs, _ = s.OutcomesForCase(ctx, c.ID); len(outs) != 3 {
+		t.Errorf("outcomes = %d, want 3 (keyless outcomes must not dedupe)", len(outs))
+	}
+}
