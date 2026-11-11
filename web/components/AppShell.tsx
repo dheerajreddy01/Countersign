@@ -1,10 +1,14 @@
 import Link from "next/link";
 import { NavLinks } from "@/components/NavLinks";
 import { isLive } from "@/lib/data";
+import { authConfig } from "@/lib/session";
 
 /** The app frame: a header with the product mark, navigation and data source. */
 export function AppShell({ children }: { children: React.ReactNode }) {
   const live = isLive();
+  // The gate is on only when a credential is configured; the middleware has
+  // already turned away anyone without a session by the time this renders.
+  const signedIn = authConfig() !== null;
 
   return (
     <div className="min-h-screen">
@@ -45,6 +49,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               >
                 Demo data
               </span>
+            )}
+            {signedIn && (
+              <form method="post" action="/api/logout">
+                <button
+                  type="submit"
+                  className="rounded-md px-2 py-1 font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                >
+                  Sign out
+                </button>
+              </form>
             )}
           </div>
         </div>

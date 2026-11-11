@@ -201,8 +201,9 @@ over the private network — they take public requests and *send* private ones,
 which a free service may do — and none of them needs a disk, which a free
 service cannot have. What it costs: a free service spins down after 15 idle
 minutes and takes about a minute to wake, so the first webhook or page load
-after a quiet spell is slow or dropped. PayPal retries; for a demo, `curl
-/healthz` on the gateway a minute beforehand. Free instances also share a
+after a quiet spell is slow or dropped. PayPal retries; for a demo, run
+`task warm-up` (or `scripts/warm-up.sh`) a couple of minutes beforehand: it
+wakes all three and waits until each answers `/healthz`. Free instances also share a
 750-hour monthly pool per workspace, which spin-down keeps this well inside.
 
 Two further levers, both deliberately not pulled here because they would make
