@@ -11,7 +11,7 @@ deployed gateway has one HTTPS URL that stays.
 | Service | Type | Why |
 |---|---|---|
 | `countersign-gateway` | web (public) | PayPal posts webhooks here. Verifies every signature. |
-| `countersign-console` | web (public) | The merchant console, behind basic auth. |
+| `countersign-console` | web (public) | The merchant console, behind a sign-in page. |
 | `countersign-caseservice` | private | The case service plus the three pipeline workers, in one instance (see below). |
 | `countersign-mandate` | web (public) | The signed, hash-chained mandate ledger. Public so a mandate can be recorded against the deployed stack. |
 | `countersign-ai` | private | Scoring and drafting. |

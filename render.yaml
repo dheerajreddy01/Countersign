@@ -110,7 +110,7 @@ services:
         sync: false
 
   # --- public: the merchant console ----------------------------------------
-  # Behind basic auth (web/middleware.ts), because it shows every dispute.
+  # Behind a sign-in page (web/middleware.ts, web/lib/session.ts), because it shows every dispute.
   # /healthz is outside that gate so this health check does not 401.
   # Free: same reasoning as the gateway. A browser waiting a minute for the
   # first page load is a fair trade for a third of the monthly bill.

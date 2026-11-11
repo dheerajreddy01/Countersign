@@ -21,6 +21,8 @@ real sandbox ruling can take days. The schedule, scope and risks are in
 
 ## How it works
 
+![How a dispute moves through Countersign](docs/design/architecture.svg)
+
 ```
 PayPal webhook ─► gateway ─► normalizer ─► case service ─► evidence builder ─► AI service
  (dispute opened)  verify,     pp → cs       cases row        order, tracking,    classify, score,
