@@ -29,6 +29,10 @@ tasks:
     desc: Stop the stack and delete volumes (wipes the database)
     cmds: [docker compose down -v]
 
+  warm-up:
+    desc: Wake the deployed demo (free Render services) a couple of minutes before showing it
+    cmds: [bash scripts/warm-up.sh]
+
   logs:
     desc: Follow logs, e.g. `task logs -- gateway`
     cmds: ["docker compose logs -f {{.CLI_ARGS}}"]
