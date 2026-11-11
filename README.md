@@ -274,4 +274,4 @@ the Blueprint is [`render.yaml`](render.yaml), deploy notes in
 
 ## License
 
-MIT, to be added.
+MIT — see [LICENSE](LICENSE).
