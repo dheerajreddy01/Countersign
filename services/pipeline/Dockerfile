@@ -18,7 +18,8 @@ RUN CGO_ENABLED=0 go build -o /out/normalizer ./cmd/normalizer \
     && CGO_ENABLED=0 go build -o /out/mandate ./cmd/mandate \
     && CGO_ENABLED=0 go build -o /out/evidencebuilder ./cmd/evidencebuilder \
     && CGO_ENABLED=0 go build -o /out/executor ./cmd/executor \
-    && CGO_ENABLED=0 go build -o /out/demoagent ./cmd/demoagent
+    && CGO_ENABLED=0 go build -o /out/demoagent ./cmd/demoagent \
+    && CGO_ENABLED=0 go build -o /out/spine ./cmd/spine
 
 FROM gcr.io/distroless/static-debian12
 COPY --from=build /out/normalizer /normalizer
@@ -27,5 +28,7 @@ COPY --from=build /out/mandate /mandate
 COPY --from=build /out/evidencebuilder /evidencebuilder
 COPY --from=build /out/executor /executor
 COPY --from=build /out/demoagent /demoagent
+# Runs the case service and the three workers in one container (render.yaml).
+COPY --from=build /out/spine /spine
 # No default command on purpose: a default would let a misconfigured service
 # start the wrong binary and look healthy while consuming nothing.

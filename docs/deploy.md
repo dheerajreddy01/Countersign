@@ -1,6 +1,6 @@
 # Deploying Countersign to Render
 
-The Blueprint is [`render.yaml`](../render.yaml). It describes nine services
+The Blueprint is [`render.yaml`](../render.yaml). It describes six services
 and one managed Postgres, all in `oregon` so they share a private network.
 
 The reason to deploy is the gateway's URL. Locally, PayPal can only reach the
@@ -12,12 +12,27 @@ deployed gateway has one HTTPS URL that stays.
 |---|---|---|
 | `countersign-gateway` | web (public) | PayPal posts webhooks here. Verifies every signature. |
 | `countersign-console` | web (public) | The merchant console, behind basic auth. |
-| `countersign-normalizer` | worker | Consumes raw webhooks, publishes dispute events. |
-| `countersign-evidencebuilder` | worker | Assembles the evidence bundle, then scores and drafts via the AI service. |
-| `countersign-executor` | worker | Carries out approved actions against the PayPal Disputes API; publishes outcomes. |
-| `countersign-caseservice` | private | Consumes dispute events and outcomes, writes cases, serves the read/write API. |
+| `countersign-caseservice` | private | The case service plus the three pipeline workers, in one instance (see below). |
 | `countersign-mandate` | web (public) | The signed, hash-chained mandate ledger. Public so a mandate can be recorded against the deployed stack. |
 | `countersign-ai` | private | Scoring and drafting. |
+
+`countersign-caseservice` runs four processes under one launcher,
+[`cmd/spine`](../services/pipeline/cmd/spine/main.go):
+
+| Process | Does |
+|---|---|
+| `caseservice` | Consumes dispute events and outcomes, writes cases, serves the read/write API. |
+| `normalizer` | Consumes raw webhooks, publishes dispute events. |
+| `evidencebuilder` | Assembles the evidence bundle, then scores and drafts via the AI service. |
+| `executor` | Carries out approved actions against the PayPal Disputes API; publishes outcomes. |
+
+They were separate worker services, which cost three more paid instances for
+processes that idle between disputes. Spine is all-or-nothing: if any one exits,
+it stops the others and exits non-zero, so Render restarts the instance instead
+of leaving a dead worker behind the case service's green health check. Their
+logs are interleaved in that one service's log, each line prefixed with the
+process name (`[normalizer] …`). Under compose they still run as four
+containers; nothing about the binaries changed.
 | `countersign-redpanda` | private + disk | The broker. Render has no managed Kafka. |
 | `countersign-postgres` | database | Cases, evidence, mandates, decisions, drafts, actions, outcomes, audit trail. |
 
@@ -171,11 +186,15 @@ Approximate monthly list prices — check the dashboard, these move:
 | | Plan | ~/month |
 |---|---|---|
 | redpanda | `1c-2g` | $25 |
-| 5 × small services | `0.5c-512mb` | $35 |
+| caseservice (+ 3 workers), ai | `0.5c-512mb` | $14 |
 | gateway, console, mandate | `free` | $0 |
 | Postgres | `0.1c-256mb` | $6 |
 | disk | 1 GB | $0.25 |
-| | | **~$66** |
+| | | **~$45** |
+
+Plus Postgres storage, billed per GB: a Blueprint that does not set
+`diskSizeGB` gets Render's default (15 GB at the time of writing), which can
+be grown but not shrunk.
 
 The three public services run on the free instance type. Nothing calls them
 over the private network — they take public requests and *send* private ones,
@@ -198,12 +217,12 @@ the stack less reliable during the testing it exists for:
 
 ### Keeping the bill down
 
-$66/month is about **$0.09/hour**, so $50 of credit is roughly **550 hours** —
-23 days if the stack runs continuously, and it has no reason to. Billing is
+$45/month is about **$0.06/hour**, so $50 of credit is roughly **800 hours** —
+about 33 days if the stack runs continuously. Billing is
 prorated by the minute, so the credit stretches to a hundred-odd demo sessions
 if the services are suspended in between:
 
-- **Suspend the five paid services after each session** (Settings → Suspend, or the
+- **Suspend the three paid services after each session** (Settings → Suspend, or the
   dashboard's bulk action). Resuming takes a minute or two, which is the whole
   cost of doing this.
 - **Postgres cannot be suspended** and neither can a disk stop billing, so the
@@ -256,7 +275,7 @@ boundaries are worth stating plainly, because the demo leans on them:
   order id; with no mandate on file the signal reads absent, which is a correct
   answer rather than a broken one.
 - **The submission is real, the verdict is labeled.** With the two `PAYPAL_*`
-  values set on `countersign-executor`, an approved action is a real call to the
+  values set on `countersign-caseservice` (where the executor runs), an approved action is a real call to the
   PayPal Disputes API, which moves a sandbox dispute to *under review* — it does
   not return a won/lost ruling, which can take days. So the terminal ruling the
   board needs to reach a final state is emitted separately and always marked
