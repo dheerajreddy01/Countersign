@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1276 557" width="1276" height="557" role="img" aria-labelledby="title desc">
+  <title id="title">How a dispute moves through Countersign</title>
+  <desc id="desc">PayPal webhook to gateway, Redpanda, then normalizer, case service and evidence builder on one Render instance, to the AI service, then the merchant console (sign-in page), whose approved actions the executor sends to the PayPal Disputes API.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#8a8fa8"/>
+    </marker>
+    <style>
+      .bg { fill: #161a27; }
+      .box { fill: #1c2032; stroke: #3a3f56; stroke-width: 1.5; }
+      .hi { fill: #20234a; stroke: #7c6ff0; stroke-width: 1.8; }
+      .ext { fill: none; stroke: #4a4f66; stroke-width: 1.5; stroke-dasharray: 6 5; }
+      .group { fill: none; stroke: #6a5ee0; stroke-width: 1.5; stroke-dasharray: 7 5; }
+      .t { font: 700 17px Inter, "Segoe UI", system-ui, sans-serif; fill: #f1f2f8; text-anchor: middle; }
+      .s { font: 400 12.5px Inter, "Segoe UI", system-ui, sans-serif; fill: #b9bcd2; text-anchor: middle; }
+      .lbl { font: 400 11.5px Inter, "Segoe UI", system-ui, sans-serif; fill: #9a9eb6; }
+      .grp { font: 700 11.5px ui-monospace, "SF Mono", Menlo, monospace; fill: #8b7cf6; letter-spacing: 1.2px; }
+      .h1 { font: 800 38px Inter, "Segoe UI", system-ui, sans-serif; fill: #f1f2f8; }
+      .foot { font: 400 11.5px Inter, "Segoe UI", system-ui, sans-serif; fill: #8a8fa8; }
+      .line { fill: none; stroke: #8a8fa8; stroke-width: 1.8; }
+      .dash { fill: none; stroke: #8a8fa8; stroke-width: 1.4; stroke-dasharray: 4 4; }
+      .new { fill: #8b7cf6; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1276" height="557"/>
+  <text class="h1" x="64" y="46">How a dispute moves through Countersign</text>
+
+  <!-- one Render instance -->
+  <rect class="group" x="561" y="107" width="478" height="128" rx="12"/>
+  <text class="grp" x="575" y="127">ONE RENDER INSTANCE (cmd/spine)</text>
+
+  <!-- top row -->
+  <rect class="ext" x="75" y="141" width="136" height="82" rx="10"/>
+  <text class="t" x="143" y="176">PayPal</text>
+  <text class="s" x="143" y="196">dispute webhook</text>
+
+  <rect class="hi" x="241" y="141" width="136" height="82" rx="10"/>
+  <text class="t" x="309" y="171">Gateway</text>
+  <text class="s" x="309" y="191">Go · verify signature</text>
+  <text class="s" x="309" y="208">dedupe</text>
+
+  <rect class="box" x="407" y="141" width="136" height="82" rx="10"/>
+  <text class="t" x="475" y="171">Redpanda</text>
+  <text class="s" x="475" y="191">Kafka-compatible</text>
+  <text class="s" x="475" y="208">event bus</text>
+
+  <rect class="box" x="573" y="141" width="136" height="82" rx="10"/>
+  <text class="t" x="641" y="176">Normalizer</text>
+  <text class="s" x="641" y="196">PayPal → dispute</text>
+
+  <rect class="box" x="729" y="141" width="136" height="82" rx="10"/>
+  <text class="t" x="797" y="176">Case service</text>
+  <text class="s" x="797" y="196">writes the case</text>
+
+  <rect class="box" x="885" y="141" width="143" height="82" rx="10"/>
+  <text class="t" x="956" y="171">Evidence</text>
+  <text class="t" x="956" y="190">builder</text>
+  <text class="s" x="956" y="210">assembles bundle</text>
+
+  <rect class="hi" x="1061" y="141" width="146" height="82" rx="10"/>
+  <text class="t" x="1134" y="167">AI service</text>
+  <text class="s" x="1134" y="186">Python · score + EV</text>
+  <text class="s" x="1134" y="201">LLM draft +</text>
+  <text class="s" x="1134" y="216">grounding guard</text>
+
+  <path class="line" d="M211 182 H238" marker-end="url(#arrow)"/>
+  <path class="line" d="M377 182 H404" marker-end="url(#arrow)"/>
+  <path class="line" d="M543 182 H570" marker-end="url(#arrow)"/>
+  <path class="line" d="M709 182 H726" marker-end="url(#arrow)"/>
+  <path class="line" d="M865 182 H882" marker-end="url(#arrow)"/>
+  <path class="line" d="M1028 182 H1058" marker-end="url(#arrow)"/>
+
+  <!-- middle row -->
+  <rect class="box" x="573" y="287" width="292" height="62" rx="10"/>
+  <text class="t" x="719" y="313">Postgres</text>
+  <text class="s" x="719" y="334">every case, decision, draft and outcome</text>
+  <path class="dash" d="M719 235 V287"/>
+
+  <rect class="hi" x="885" y="287" width="143" height="62" rx="10"/>
+  <text class="t" x="956" y="312">Mandate ledger</text>
+  <text class="s" x="956" y="332">signed · hash-chained</text>
+  <path class="dash" d="M956 287 V226" marker-end="url(#arrow)"/>
+  <text class="lbl" x="964" y="266">mandate lookup</text>
+
+  <rect class="ext" x="1053" y="287" width="109" height="62" rx="10"/>
+  <text class="t" x="1107" y="312">AI agent</text>
+  <text class="s" x="1107" y="332">signs mandate</text>
+  <path class="dash" d="M1053 318 H1031" marker-end="url(#arrow)"/>
+
+  <!-- AI service down to the console -->
+  <path class="line" d="M1188 223 V392" marker-end="url(#arrow)"/>
+  <text class="lbl" x="1182" y="373" text-anchor="end">score + draft</text>
+
+  <!-- bottom row -->
+  <rect class="ext" x="75" y="395" width="185" height="81" rx="10"/>
+  <text class="t" x="167" y="427">PayPal Disputes API</text>
+  <text class="s" x="167" y="448">evidence · offer · accept</text>
+
+  <rect class="box" x="573" y="395" width="123" height="81" rx="10"/>
+  <text class="t" x="634" y="427">Executor</text>
+  <text class="s" x="634" y="448">carries out action</text>
+  <text class="s" x="634" y="464">(same instance)</text>
+
+  <rect class="hi" x="885" y="395" width="322" height="81" rx="10"/>
+  <text class="t" x="1046" y="427">Merchant console</text>
+  <text class="s" x="1046" y="448">Next.js · review, approve</text>
+  <text class="s" x="1046" y="465"><tspan class="new" font-weight="600" style="fill:#a99cff">sign-in page</tspan> · signed session cookie</text>
+
+  <path class="line" d="M885 435 H699" marker-end="url(#arrow)"/>
+  <text class="lbl" x="790" y="425" text-anchor="middle">approved action</text>
+  <path class="line" d="M573 435 H263" marker-end="url(#arrow)"/>
+
+  <path class="dash" d="M634 395 V369 H787 V352" marker-end="url(#arrow)"/>
+  <text class="lbl" x="797" y="373">outcome, back onto the case</text>
+
+  <text class="foot" x="75" y="521">Dashed boxes are outside Countersign. Every hop on the bus is idempotent and retried; a record that can't be processed goes to a dead-letter topic.</text>
+</svg>
