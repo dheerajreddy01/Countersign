@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Countersign Demo Guide</title>
+<style>
+  :root {
+    --bg: #eef0f5;
+    --stage: #ffffff;
+    --ink: #121826;
+    --ink-2: #4a5468;
+    --ink-3: #7b8597;
+    --line: #dde1ea;
+    --accent: #4f46e5;
+    --accent-soft: #eef0ff;
+    --good: #0f8a5f;
+    --good-soft: #e6f6ef;
+    --warn: #b45309;
+    --warn-soft: #fdf3e3;
+    --box: #f7f8fb;
+    --box-line: #c9cfdb;
+    --say: #f4f5ff;
+    --code-bg: #0f1424;
+    --code-ink: #e6e9f2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0b0e16;
+      --stage: #141927;
+      --ink: #eef1f7;
+      --ink-2: #b4bccc;
+      --ink-3: #8790a3;
+      --line: #273049;
+      --accent: #8b85ff;
+      --accent-soft: #1f2245;
+      --good: #4cc79a;
+      --good-soft: #12301f;
+      --warn: #f0a94b;
+      --warn-soft: #33260f;
+      --box: #1a2033;
+      --box-line: #39435f;
+      --say: #1b1f3a;
+      --code-bg: #0a0d17;
+      --code-ink: #e6e9f2;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0b0e16;
+    --stage: #141927;
+    --ink: #eef1f7;
+    --ink-2: #b4bccc;
+    --ink-3: #8790a3;
+    --line: #273049;
+    --accent: #8b85ff;
+    --accent-soft: #1f2245;
+    --good: #4cc79a;
+    --good-soft: #12301f;
+    --warn: #f0a94b;
+    --warn-soft: #33260f;
+    --box: #1a2033;
+    --box-line: #39435f;
+    --say: #1b1f3a;
+    --code-bg: #0a0d17;
+    --code-ink: #e6e9f2;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    overflow: hidden;
+  }
+
+  /* The stage is a fixed 1280x720 canvas scaled to fit the window. */
+  #viewport { position: fixed; inset: 0 0 56px 0; display: grid; place-items: center; }
+  #stage {
+    width: 1280px; height: 720px;
+    position: relative;
+    transform-origin: center center;
+  }
+  .slide {
+    position: absolute; inset: 0;
+    background: var(--stage);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: 56px 72px 48px;
+    display: none;
+    flex-direction: column;
+    box-shadow: 0 10px 40px rgba(10, 15, 30, .08);
+  }
+  .slide.active { display: flex; }
+
+  .kicker {
+    font-size: 15px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--accent); margin: 0 0 10px;
+  }
+  h1 { font-size: 64px; line-height: 1.05; margin: 0 0 18px; letter-spacing: -.02em; }
+  h2 { font-size: 40px; line-height: 1.15; margin: 0 0 22px; letter-spacing: -.01em; }
+  h3 { font-size: 20px; margin: 0 0 8px; }
+  p { margin: 0 0 12px; }
+  .lead { font-size: 24px; color: var(--ink-2); max-width: 900px; }
+  .muted { color: var(--ink-3); }
+  .time {
+    display: inline-block; font-variant-numeric: tabular-nums;
+    background: var(--accent-soft); color: var(--accent);
+    font-weight: 700; font-size: 15px; padding: 4px 12px; border-radius: 999px;
+    margin-bottom: 14px;
+    align-self: flex-start;
+  }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
+  .card {
+    border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px; background: var(--box);
+  }
+  .stat { font-size: 64px; font-weight: 800; letter-spacing: -.02em; color: var(--accent); line-height: 1; margin-bottom: 8px; }
+
+  .show {
+    border-left: 4px solid var(--ink-3); padding: 10px 16px; margin: 0 0 16px;
+    color: var(--ink-2); font-size: 18px; background: var(--box); border-radius: 0 10px 10px 0;
+  }
+  .show b { color: var(--ink); }
+  .say {
+    border-left: 4px solid var(--accent); background: var(--say);
+    padding: 14px 20px; border-radius: 0 12px 12px 0;
+    font-size: 21px; line-height: 1.5; margin: 0 0 14px;
+  }
+  .label {
+    font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--ink-3); margin: 0 0 6px; display: block;
+  }
+
+  ul.clean { list-style: none; padding: 0; margin: 0; }
+  ul.clean li { padding: 8px 0 8px 30px; position: relative; font-size: 19px; border-bottom: 1px solid var(--line); }
+  ul.clean li:last-child { border-bottom: 0; }
+  ul.clean li::before {
+    content: ""; position: absolute; left: 6px; top: 17px; width: 9px; height: 9px;
+    border-radius: 50%; background: var(--accent);
+  }
+  ul.check li::before { content: "✓"; background: none; color: var(--good); font-weight: 800; top: 7px; left: 4px; width: auto; height: auto; }
+  ul.warn li::before { content: "!"; background: none; color: var(--warn); font-weight: 900; top: 7px; left: 9px; width: auto; height: auto; }
+
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 14px; font-weight: 600; }
+  .pill.real { background: var(--good-soft); color: var(--good); }
+  .pill.sim { background: var(--warn-soft); color: var(--warn); }
+
+  pre {
+    background: var(--code-bg); color: var(--code-ink);
+    padding: 16px 18px; border-radius: 12px; margin: 0 0 14px;
+    font: 15px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .92em; }
+  :not(pre) > code { background: var(--box); border: 1px solid var(--line); padding: 1px 6px; border-radius: 6px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 18px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); }
+  td.t { font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 700; white-space: nowrap; width: 130px; }
+
+  .foot { margin-top: auto; display: flex; justify-content: space-between; color: var(--ink-3); font-size: 14px; padding-top: 14px; }
+
+  /* Architecture diagram */
+  .arch { flex: 1; display: flex; align-items: center; justify-content: center; }
+  .arch svg { width: 100%; height: auto; max-height: 520px; }
+  .arch .node rect { fill: var(--box); stroke: var(--box-line); stroke-width: 1.5; }
+  .arch .node.hi rect { fill: var(--accent-soft); stroke: var(--accent); }
+  .arch .node.ext rect { fill: var(--stage); stroke-dasharray: 5 4; }
+  .arch .t1 { fill: var(--ink); font-size: 17px; font-weight: 700; }
+  .arch .t2 { fill: var(--ink-2); font-size: 13px; }
+  .arch .edge { stroke: var(--ink-3); stroke-width: 2; fill: none; }
+  .arch .edge.data { stroke-dasharray: 4 4; stroke-width: 1.5; }
+  .arch .elabel { fill: var(--ink-3); font-size: 12px; }
+  .arch .group { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 6 5; opacity: .7; }
+  .arch .glabel { fill: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: .06em; }
+  .arch marker path { fill: var(--ink-3); }
+
+  /* Controls */
+  #bar {
+    position: fixed; left: 0; right: 0; bottom: 0; height: 56px;
+    display: flex; align-items: center; justify-content: center; gap: 14px;
+    color: var(--ink-2); font-size: 14px; padding: 0 16px;
+  }
+  #bar button {
+    background: var(--stage); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 10px; padding: 7px 14px; font: inherit; cursor: pointer;
+  }
+  #bar button:hover { border-color: var(--accent); }
+  #count { font-variant-numeric: tabular-nums; min-width: 64px; text-align: center; }
+  #progress { position: fixed; left: 0; bottom: 0; height: 3px; background: var(--accent); transition: width .2s; }
+  .hint { color: var(--ink-3); }
+  @media (max-width: 640px) { .hint { display: none; } }
+</style>
+</head>
+<body>
+<div id="viewport"><div id="stage">
+
+<!-- 1 · Title -->
+<section class="slide" data-title="Title">
+  <p class="kicker">Demo guide · 3-minute video</p>
+  <h1>Countersign</h1>
+  <p class="lead">Every dispute answered. Every agent purchase proven.</p>
+  <div class="grid3" style="margin-top:44px">
+    <div class="card"><h3>Part 1 · 0:00–1:00</h3><p class="muted">The problem, and how the system works. Slides 2–3 are built to be shown on camera.</p></div>
+    <div class="card"><h3>Part 2 · 1:00–3:00</h3><p class="muted">The live board on Render: a real sandbox dispute, a signed mandate, a grounded draft, approval.</p></div>
+    <div class="card"><h3>Before and after</h3><p class="muted">Pre-recording checklist, what to say about real vs simulated, recovery, upload and submission.</p></div>
+  </div>
+  <div class="foot"><span>← → or Space to move · F for fullscreen · T to switch theme</span><span>Deadline: Nov 12, 12:00 PM PST</span></div>
+</section>
+
+<!-- 2 · Problem (on camera) -->
+<section class="slide" data-title="The problem">
+  <p class="kicker">On camera · 0:00–0:15</p>
+  <h2>Merchants lose disputes they could win</h2>
+  <div class="grid3" style="margin-top:12px">
+    <div class="card"><div class="stat">$128</div><p>what a chargeback costs a merchant</p></div>
+    <div class="card"><div class="stat">54%</div><p>win rate on the disputes merchants fight</p></div>
+    <div class="card"><div class="stat">8%</div><p>of disputes merchants actually fight</p></div>
+  </div>
+  <div class="card" style="margin-top:26px">
+    <h3>And now agents buy on people's behalf</h3>
+    <p class="muted" style="font-size:19px;margin:0">"I didn't authorize this" needs proof of what the user authorized. Countersign records it, and uses it as evidence.</p>
+  </div>
+  <div class="foot"><span>Figures as stated in the original demo script</span><span>Countersign</span></div>
+</section>
+
+<!-- 3 · Architecture (on camera) -->
+<section class="slide" data-title="Architecture">
+  <p class="kicker">On camera · 0:15–1:00</p>
+  <h2 style="margin-bottom:6px">How a dispute moves through Countersign</h2>
+  <div class="arch">
+    <svg viewBox="0 0 1180 470" role="img" aria-label="Architecture: PayPal webhook to gateway to Redpanda, through normalizer, case service, evidence builder and AI service, to the merchant console, executor and back to the PayPal Disputes API">
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+      </defs>
+
+      <!-- shared instance group -->
+      <rect class="group" x="508" y="28" width="490" height="132" rx="14"/>
+      <text class="glabel" x="522" y="48">ONE RENDER INSTANCE (cmd/spine)</text>
+
+      <!-- top row -->
+      <g class="node ext"><rect x="10" y="62" width="140" height="84" rx="12"/>
+        <text class="t1" x="80" y="98" text-anchor="middle">PayPal</text>
+        <text class="t2" x="80" y="118" text-anchor="middle">dispute webhook</text></g>
+      <g class="node hi"><rect x="180" y="62" width="140" height="84" rx="12"/>
+        <text class="t1" x="250" y="94" text-anchor="middle">Gateway</text>
+        <text class="t2" x="250" y="114" text-anchor="middle">Go · verify signature</text>
+        <text class="t2" x="250" y="131" text-anchor="middle">dedupe</text></g>
+      <g class="node"><rect x="350" y="62" width="140" height="84" rx="12"/>
+        <text class="t1" x="420" y="94" text-anchor="middle">Redpanda</text>
+        <text class="t2" x="420" y="114" text-anchor="middle">Kafka-compatible</text>
+        <text class="t2" x="420" y="131" text-anchor="middle">event bus</text></g>
+      <g class="node"><rect x="520" y="62" width="140" height="84" rx="12"/>
+        <text class="t1" x="590" y="98" text-anchor="middle">Normalizer</text>
+        <text class="t2" x="590" y="118" text-anchor="middle">PayPal → dispute</text></g>
+      <g class="node"><rect x="680" y="62" width="140" height="84" rx="12"/>
+        <text class="t1" x="750" y="98" text-anchor="middle">Case service</text>
+        <text class="t2" x="750" y="118" text-anchor="middle">writes the case</text></g>
+      <g class="node"><rect x="840" y="62" width="146" height="84" rx="12"/>
+        <text class="t1" x="913" y="94" text-anchor="middle">Evidence</text>
+        <text class="t1" x="913" y="113" text-anchor="middle">builder</text>
+        <text class="t2" x="913" y="133" text-anchor="middle">assembles bundle</text></g>
+      <g class="node hi"><rect x="1020" y="62" width="150" height="84" rx="12"/>
+        <text class="t1" x="1095" y="90" text-anchor="middle">AI service</text>
+        <text class="t2" x="1095" y="110" text-anchor="middle">Python · score + EV</text>
+        <text class="t2" x="1095" y="127" text-anchor="middle">LLM draft +</text>
+        <text class="t2" x="1095" y="142" text-anchor="middle">grounding guard</text></g>
+
+      <!-- top row edges -->
+      <path class="edge" d="M150 104 H178" marker-end="url(#arr)"/>
+      <path class="edge" d="M320 104 H348" marker-end="url(#arr)"/>
+      <path class="edge" d="M490 104 H518" marker-end="url(#arr)"/>
+      <path class="edge" d="M660 104 H678" marker-end="url(#arr)"/>
+      <path class="edge" d="M820 104 H838" marker-end="url(#arr)"/>
+      <path class="edge" d="M986 104 H1018" marker-end="url(#arr)"/>
+
+      <!-- middle row: data stores -->
+      <g class="node"><rect x="520" y="212" width="300" height="64" rx="12"/>
+        <text class="t1" x="670" y="240" text-anchor="middle">Postgres</text>
+        <text class="t2" x="670" y="260" text-anchor="middle">every case, decision, draft and outcome</text></g>
+      <g class="node hi"><rect x="840" y="212" width="146" height="64" rx="12"/>
+        <text class="t1" x="913" y="238" text-anchor="middle">Mandate ledger</text>
+        <text class="t2" x="913" y="258" text-anchor="middle">signed · hash-chained</text></g>
+      <g class="node ext"><rect x="1012" y="212" width="112" height="64" rx="12"/>
+        <text class="t1" x="1068" y="238" text-anchor="middle">AI agent</text>
+        <text class="t2" x="1068" y="258" text-anchor="middle">signs mandate</text></g>
+
+      <path class="edge data" d="M1012 244 H988" marker-end="url(#arr)"/>
+      <path class="edge data" d="M913 212 V148" marker-end="url(#arr)"/>
+      <text class="elabel" x="920" y="190">mandate lookup</text>
+      <path class="edge data" d="M670 212 V148"/>
+
+      <!-- bottom row: approval and action -->
+      <g class="node ext"><rect x="10" y="322" width="190" height="84" rx="12"/>
+        <text class="t1" x="105" y="356" text-anchor="middle">PayPal Disputes API</text>
+        <text class="t2" x="105" y="377" text-anchor="middle">evidence · offer · accept</text></g>
+      <g class="node"><rect x="520" y="322" width="126" height="84" rx="12"/>
+        <text class="t1" x="583" y="356" text-anchor="middle">Executor</text>
+        <text class="t2" x="583" y="377" text-anchor="middle">carries out action</text>
+        <text class="t2" x="583" y="394" text-anchor="middle">(same instance)</text></g>
+      <g class="node hi"><rect x="840" y="322" width="330" height="84" rx="12"/>
+        <text class="t1" x="1005" y="356" text-anchor="middle">Merchant console</text>
+        <text class="t2" x="1005" y="377" text-anchor="middle">Next.js · review, approve · behind basic auth</text></g>
+
+      <path class="edge" d="M1150 146 V320" marker-end="url(#arr)"/>
+      <text class="elabel" x="1144" y="300" text-anchor="end">score + draft</text>
+      <path class="edge" d="M840 364 H648" marker-end="url(#arr)"/>
+      <text class="elabel" x="690" y="354">approved action</text>
+      <path class="edge" d="M520 364 H202" marker-end="url(#arr)"/>
+      <path class="edge data" d="M583 322 V296 H740 V278" marker-end="url(#arr)"/>
+      <text class="elabel" x="750" y="300">outcome, back onto the case</text>
+
+      <text class="elabel" x="10" y="452">Dashed boxes are outside Countersign. Every hop on the bus is idempotent and retried; a record that can't be processed goes to a dead-letter topic.</text>
+    </svg>
+  </div>
+  <div class="foot"><span>Deployed on Render: 6 services + managed Postgres</span><span>Show this slide while narrating Part 1</span></div>
+</section>
+
+<!-- 4 · Architecture narration -->
+<section class="slide" data-title="Part 1 script">
+  <span class="time">0:00 – 1:00 · Part 1</span>
+  <h2>What to say over slides 2 and 3</h2>
+  <span class="label">0:00–0:15 · on slide 2</span>
+  <div class="say">"A chargeback costs a merchant about $128. They win 54% of the disputes they fight, but fight only 8%, because building a defense by hand isn't worth it on any single case. And now AI agents buy on people's behalf, which breaks 'I didn't authorize this.' Countersign answers both."</div>
+  <span class="label">0:15–1:00 · on slide 3, pointing left to right</span>
+  <div class="say" style="font-size:17.5px">"A dispute starts as a webhook. Our gateway, written in Go, verifies PayPal's signature, drops duplicates, and publishes it to Redpanda, a Kafka-compatible event bus. Everything after that is an event. A normalizer turns PayPal's payload into a dispute; the case service writes it to Postgres. The evidence builder assembles the bundle: the order, delivery, support history, and the agent's mandate from our signed, hash-chained ledger. Then the AI service, in Python, scores the odds of winning, weighs the expected value of fighting against refunding, and has an LLM draft the rebuttal behind a grounding guard: every sentence must cite evidence. The merchant approves in the console; the executor carries the action out against PayPal's Disputes API, and the outcome flows back onto the case. Each step is idempotent and retried, and a record that can't be processed goes to a dead-letter topic instead of vanishing. It all runs on Render: six services and a managed Postgres."</div>
+</section>
+
+<!-- 5 · Real vs simulated -->
+<section class="slide" data-title="Real vs simulated">
+  <p class="kicker">Say these once, on camera</p>
+  <h2>What's real and what's simulated</h2>
+  <table>
+    <tr><th>Part</th><th>Status</th><th>How to say it</th></tr>
+    <tr><td>Signed mandate ledger</td><td><span class="pill real">real</span></td><td>Ed25519-signed, hash-chained; the one part never staged.</td></tr>
+    <tr><td>Dispute <code>PP-R-TMY-10198515</code></td><td><span class="pill real">real</span> <span class="pill sim">replayed</span></td><td>A real sandbox dispute. Its webhook never arrived, so PayPal's own record of it was replayed into the pipeline.</td></tr>
+    <tr><td>The other 12 cases</td><td><span class="pill sim">scripted</span></td><td>Seeded scenarios covering every deadline column and both recommendations.</td></tr>
+    <tr><td>Order, carrier, support records</td><td><span class="pill sim">staged</span></td><td>Labelled <code>demo</code> on screen: there's no live link to a merchant's systems.</td></tr>
+    <tr><td>Score, draft, grounding guard</td><td><span class="pill real">real</span></td><td>Computed live; drafts are LLM-written and gated by the guard.</td></tr>
+    <tr><td>Approved action and ruling</td><td><span class="pill sim">simulated</span></td><td>Labelled simulated. A sandbox ruling takes days.</td></tr>
+  </table>
+</section>
+
+<!-- 6 · Before recording -->
+<section class="slide" data-title="Before you record">
+  <p class="kicker">Checklist</p>
+  <h2>Before you hit record</h2>
+  <div class="grid2">
+    <div>
+      <h3>1 · Wake the free services</h3>
+      <p class="muted">Each sleeps after 15 idle minutes and takes about a minute to wake. All three should print 200.</p>
+<pre>for s in console gateway mandate; do
+  curl -s -o /dev/null -w "$s %{http_code}\n" \
+    https://countersign-$s-yhhv.onrender.com/healthz
+done</pre>
+      <h3>2 · Open three tabs</h3>
+      <ul class="clean">
+        <li>Console board, logged in as <code>merchant</code></li>
+        <li>Sandbox Resolution Center as the buyer, on <code>PP-R-TMY-10198515</code></li>
+        <li>This guide, on slide 2 for the opening</li>
+      </ul>
+    </div>
+    <div>
+      <h3>3 · Leave the case service alone</h3>
+      <ul class="clean warn">
+        <li>No redeploys and no env changes on <code>countersign-caseservice</code> before recording.</li>
+        <li>If cases re-score on their own or drafts flip, use <b>Restart service</b> and wait for one instance.</li>
+      </ul>
+      <h3 style="margin-top:18px">4 · Protect your cases</h3>
+      <ul class="clean check">
+        <li>Approve on <b>Lucas Moreau · Standing Desk Frame</b> only.</li>
+        <li>Leave the real dispute un-actioned for judges.</li>
+        <li>Don't rehearse the approval: it's one-way.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- 7 · Timeline -->
+<section class="slide" data-title="Run of show">
+  <p class="kicker">Run of show</p>
+  <h2>Three minutes, eight beats</h2>
+  <table>
+    <tr><th>Time</th><th>Beat</th><th>On screen</th></tr>
+    <tr><td class="t">0:00–0:15</td><td>The problem</td><td>Slide 2</td></tr>
+    <tr><td class="t">0:15–1:00</td><td>How it works</td><td>Slide 3 (architecture)</td></tr>
+    <tr><td class="t">1:00–1:10</td><td>The board</td><td>Console · deadline columns</td></tr>
+    <tr><td class="t">1:10–1:40</td><td>A real dispute, a real mandate</td><td>Resolution Center → case <code>PP-R-TMY-10198515</code></td></tr>
+    <tr><td class="t">1:40–2:10</td><td>Score and grounded draft</td><td>Lucas Moreau · Standing Desk Frame</td></tr>
+    <tr><td class="t">2:10–2:30</td><td>It isn't always fight</td><td>Grace Thompson · monitor, then Ethan Brooks</td></tr>
+    <tr><td class="t">2:30–2:45</td><td>Approve</td><td>Lucas Moreau → Provide evidence → won</td></tr>
+    <tr><td class="t">2:45–3:00</td><td>The honest close</td><td>The board</td></tr>
+  </table>
+</section>
+
+<!-- 8 · Board -->
+<section class="slide" data-title="1:00 The board">
+  <span class="time">1:00 – 1:10</span>
+  <h2>The board</h2>
+  <div class="show"><b>Show:</b> the console board. Sweep the deadline columns from Overdue to Later, then the stat tiles: open cases, amount at risk, needs review.</div>
+  <div class="say">"Every open dispute by respond-by deadline, each already evidenced, scored and drafted. The merchant's job is to review and approve."</div>
+</section>
+
+<!-- 9 · Real dispute -->
+<section class="slide" data-title="1:10 Real dispute">
+  <span class="time">1:10 – 1:40</span>
+  <h2>A real dispute, with a real mandate</h2>
+  <div class="show"><b>Show:</b> the buyer's Resolution Center on case <code>PP-R-TMY-10198515</code>, then the same case on the board. Open it.</div>
+  <div class="say">"This is a real sandbox dispute: a $149 payment, disputed as item-not-received and escalated to a claim. The sandbox never sent its webhook, so we replayed PayPal's own record of it into the pipeline."</div>
+  <div class="show"><b>Point at:</b> the <b>mandate</b> evidence record.</div>
+  <div class="say">"Before that purchase, an agent recorded a signed mandate: what the user authorized, up to $200. The scorer checked it covers this transaction, which is a big part of why this scores fight at 94%."</div>
+</section>
+
+<!-- 10 · Score and draft -->
+<section class="slide" data-title="1:40 Score + draft">
+  <span class="time">1:40 – 2:10</span>
+  <h2>Score and grounded draft</h2>
+  <div class="show"><b>Show:</b> open <b>Lucas Moreau · Standing Desk Frame</b>. Point at the <code>demo</code> labels on the staged records, then the decision panel and the drafted rebuttal.</div>
+  <div class="say">"The win probability, the factors behind it, and the expected-value call: fight. The rebuttal is written by an LLM, but every sentence cites an evidence record, and the grounding guard rejects any sentence that doesn't. The model can't invent evidence, and if the guard fails, the merchant can't send it."</div>
+</section>
+
+<!-- 11 · Not always fight -->
+<section class="slide" data-title="2:10 Not always fight">
+  <span class="time">2:10 – 2:30</span>
+  <h2>It isn't always fight</h2>
+  <div class="show"><b>Show:</b> open <b>Grace Thompson · 27in 4K Monitor</b>.</div>
+  <div class="say">"Here the agent was authorized up to $300, but the charge was $349. The mandate doesn't cover it, so it doesn't count, and the odds drop."</div>
+  <div class="show"><b>Point at:</b> <b>Ethan Brooks</b> on the board (recommended: refund).</div>
+  <div class="say">"And where fighting costs more than it would recover, it recommends the refund."</div>
+</section>
+
+<!-- 12 · Approve -->
+<section class="slide" data-title="2:30 Approve">
+  <span class="time">2:30 – 2:45</span>
+  <h2>Approve</h2>
+  <div class="show"><b>Show:</b> back on <b>Lucas Moreau</b>, click <b>Provide evidence</b> (the starred, recommended action). Hold on the case as it moves to <i>action taken</i>, the action lands on the timeline, and the simulated ruling brings it to <b>won</b>.</div>
+  <div class="say">Let the screen carry this beat. If you want a line: "One click. The executor carries it out, and the outcome comes back onto the case."</div>
+</section>
+
+<!-- 13 · Close -->
+<section class="slide" data-title="2:45 Close">
+  <span class="time">2:45 – 3:00</span>
+  <h2>The honest close</h2>
+  <div class="show"><b>Show:</b> the board.</div>
+  <div class="say">"The action and the ruling are simulated and labeled; in sandbox a real ruling takes days. The rest is the working system: a real sandbox dispute, a signed mandate, a score, and a draft that can't cite what isn't there. Countersign: every dispute answered, every agent purchase proven."</div>
+</section>
+
+<!-- 14 · Recovery -->
+<section class="slide" data-title="If it stalls">
+  <p class="kicker">Recovery</p>
+  <h2>If something stalls on camera</h2>
+  <table>
+    <tr><th>Symptom</th><th>Cause</th><th>Do</th></tr>
+    <tr><td>Console slow on first load</td><td>A free service waking</td><td>Wait it out, or re-run the health check before the take.</td></tr>
+    <tr><td>Cases re-scoring, drafts changing</td><td>A leftover case-service instance</td><td>Restart service on the case service; wait for one instance.</td></tr>
+    <tr><td>Action button disabled</td><td>Grounding guard hasn't passed</td><td>That's the gate working (the server returns 409). Use another case.</td></tr>
+    <tr><td>Approved the wrong case</td><td>Approvals are one-way</td><td>Use another mandate-backed fight: Hana Suzuki or Maya Chen.</td></tr>
+    <tr><td>Anything else on Render</td><td>—</td><td>Record locally: <code>task up</code>, <code>scripts/seed-disputes.sh</code>, console on <code>localhost:3000</code>.</td></tr>
+  </table>
+</section>
+
+<!-- 15 · After recording -->
+<section class="slide" data-title="After recording">
+  <p class="kicker">After recording</p>
+  <h2>Upload and submit</h2>
+  <div class="grid2">
+    <div>
+      <h3>The video</h3>
+      <ul class="clean check">
+        <li>Trim to under 3:00 (QuickTime: Edit → Trim).</li>
+        <li>No music. Copyrighted music is banned.</li>
+        <li>No other companies' logos on screen.</li>
+        <li>Upload to YouTube as <b>Public</b>.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>The submission</h3>
+      <ul class="clean check">
+        <li>Hosted URL: the console, with the <code>merchant</code> login as test credentials.</li>
+        <li>Public repo with the MIT license in About.</li>
+        <li>Text description of features.</li>
+        <li>List of AI tools used and how.</li>
+        <li>Stays testable until Dec 15: keep the paid services running.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="foot"><span>Due Nov 12, 12:00 PM PST</span></div>
+</section>
+
+</div></div>
+
+<div id="progress"></div>
+<div id="bar">
+  <button id="prev" aria-label="Previous slide">← Prev</button>
+  <span id="count">1 / 1</span>
+  <button id="next" aria-label="Next slide">Next →</button>
+  <span class="hint" id="title"></span>
+</div>
+
+<script>
+(function () {
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var stage = document.getElementById('stage');
+  var viewport = document.getElementById('viewport');
+  var count = document.getElementById('count');
+  var title = document.getElementById('title');
+  var progress = document.getElementById('progress');
+  var i = 0;
+
+  function fromHash() {
+    var n = parseInt((location.hash || '').replace('#', ''), 10);
+    return (n >= 1 && n <= slides.length) ? n - 1 : 0;
+  }
+
+  function show(n) {
+    i = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach(function (s, k) { s.classList.toggle('active', k === i); });
+    count.textContent = (i + 1) + ' / ' + slides.length;
+    title.textContent = slides[i].getAttribute('data-title') || '';
+    progress.style.width = ((i + 1) / slides.length * 100) + '%';
+    if (location.hash !== '#' + (i + 1)) history.replaceState(null, '', '#' + (i + 1));
+  }
+
+  function fit() {
+    var w = viewport.clientWidth - 24, h = viewport.clientHeight - 24;
+    var s = Math.min(w / 1280, h / 720);
+    stage.style.transform = 'scale(' + s + ')';
+  }
+
+  document.getElementById('prev').addEventListener('click', function () { show(i - 1); });
+  document.getElementById('next').addEventListener('click', function () { show(i + 1); });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var k = e.key;
+    if (k === 'ArrowRight' || k === 'PageDown' || k === ' ') { e.preventDefault(); show(i + 1); }
+    else if (k === 'ArrowLeft' || k === 'PageUp') { e.preventDefault(); show(i - 1); }
+    else if (k === 'Home') show(0);
+    else if (k === 'End') show(slides.length - 1);
+    else if (k === 'f' || k === 'F') {
+      if (!document.fullscreenElement) { document.documentElement.requestFullscreen && document.documentElement.requestFullscreen(); }
+      else { document.exitFullscreen && document.exitFullscreen(); }
+    } else if (k === 't' || k === 'T') {
+      var root = document.documentElement;
+      var dark = root.getAttribute('data-theme') === 'dark' ||
+        (!root.getAttribute('data-theme') && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      root.setAttribute('data-theme', dark ? 'light' : 'dark');
+    }
+  });
+
+  var x0 = null;
+  document.addEventListener('touchstart', function (e) { x0 = e.touches[0].clientX; }, { passive: true });
+  document.addEventListener('touchend', function (e) {
+    if (x0 === null) return;
+    var dx = e.changedTouches[0].clientX - x0;
+    if (Math.abs(dx) > 40) show(i + (dx < 0 ? 1 : -1));
+    x0 = null;
+  });
+
+  window.addEventListener('resize', fit);
+  window.addEventListener('hashchange', function () { show(fromHash()); });
+  fit();
+  show(fromHash());
+})();
+</script>
+</body>
+</html>
