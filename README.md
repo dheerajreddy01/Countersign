@@ -29,7 +29,7 @@ PayPal webhook ─► gateway ─► normalizer ─► case service ─► evide
                    dedupe                                     invoice, mandate    EV, draft, guard
                                                                                       │
  PayPal Disputes API ◄─ executor ◄─ console API ◄── merchant approves/edits ◄─────────┘
-   evidence / offer / accept          (Next.js console + Bryntum deadline board)
+   evidence / offer / accept          (Next.js console + deadline board)
         │
         └─► ruling ─► outcomes ─► scoring updater
 ```
@@ -169,7 +169,7 @@ Two drafters sit behind `POST /draft`, with the grounding guard as the hard gate
 
 ## Merchant console
 
-Next.js console with an approve/edit flow and a Bryntum Scheduler board of dispute deadlines. Bryntum is a commercial library, so a licence or trial is needed.
+Next.js console behind a sign-in page, with an approve/edit flow and a board of dispute deadlines, bucketed by respond-by date and colored by urgency. The board is dependency-free (`web/components/DeadlineBoard.tsx`); the plan named Bryntum Scheduler, but it is a commercial, license-gated library.
 
 ## Demo path
 
@@ -178,7 +178,9 @@ Next.js console with an approve/edit flow and a Bryntum Scheduler board of dispu
 3. Evidence is assembled for "item not received" or "unauthorized".
 4. The AI service scores the case, applies the decision rule, and drafts a cited response.
 5. The merchant approves; the executor sends evidence, an offer, a message, or accepts the claim.
-6. Sandbox adjudication returns a ruling and the outcome is stored.
+6. The ruling is stored as an outcome. A real sandbox ruling takes days, so by
+   default the executor emits a simulated one, labeled as such
+   (`EXECUTOR_SIMULATE_RULING`).
 
 ## Test credentials
 
@@ -194,7 +196,9 @@ The merchant console is the only thing a reviewer needs to log into.
 
 No PayPal account is required to see the whole path: with the `PAYPAL_*` values
 unset, the executor simulates each action and the ruling, both labeled as such.
-Set them to make the Disputes API calls real.
+Set them to make the Disputes API calls real. Without them the gateway also
+needs `GATEWAY_SKIP_SIGNATURE_VERIFY=true` to start; see
+[Run it without PayPal](#run-it-without-paypal).
 
 ## AI tools used, and how
 
@@ -228,7 +232,9 @@ assistants used to build it.
 
 ## Getting started
 
-Needs Docker and [Task](https://taskfile.dev). Fill in the PayPal sandbox values in `.env` after the first step.
+Needs Docker and [Task](https://taskfile.dev). After the first step, either fill
+in the PayPal sandbox values in `.env`, or follow
+[Run it without PayPal](#run-it-without-paypal) below.
 
 ```bash
 task setup    # creates .env from .env.example
@@ -248,11 +254,32 @@ that is not a PayPal host. For local testing without credentials, set
 `GATEWAY_SKIP_SIGNATURE_VERIFY=true`, which accepts every POST unverified and
 says so in the log. Branching and CI: [docs/branching.md](docs/branching.md).
 
-Record a mandate the way the demo agent does, and then verify the ledger:
+### Run it without PayPal
+
+The whole demo path runs locally with no PayPal credentials. The gateway accepts
+unsigned webhooks, and the executor simulates each action and the ruling,
+labeled as such. Only do this on your own machine, never behind a public tunnel.
 
 ```bash
-go run ./cmd/demoagent -order-id 7YH29301     -instruction "Buy the Trail Runner GTX in size 10, under $200"     -authorized 200.00 -constraint "under $200"      # from services/pipeline
+task setup
+# in .env, set GATEWAY_SKIP_SIGNATURE_VERIFY=true
+task up
 
+# record a mandate the way the demo agent does (from services/pipeline)
+cd services/pipeline
+go run ./cmd/demoagent -service http://localhost:8083 -order-id 7YH29301 \
+  -instruction 'Buy the Trail Runner GTX in size 10, under $200' \
+  -authorized 200.00 -constraint 'under $200'
+cd ../..
+
+# inject a dispute against that order through the gateway
+scripts/demo-dispute.sh 7YH29301 UNAUTHORISED 149.00
+```
+
+Then open `http://localhost:3000`: the case appears on the board with its
+evidence, score and cited draft. To check the ledger and the cases directly:
+
+```bash
 curl -s localhost:8083/chain | jq '{length, valid}'  # re-verifies every link
 curl -s localhost:8081/cases | jq '.cases[0]'        # cases the spine has written
 ```
@@ -263,14 +290,15 @@ the chain restarts on every restart. The integration tests for the Postgres
 layer need a real database and are behind a build tag:
 
 ```bash
-TEST_DATABASE_URL=postgres://countersign:countersign@localhost:5432/countersign?sslmode=disable   go test -tags integration ./internal/store/
+TEST_DATABASE_URL='postgres://countersign:countersign@localhost:5432/countersign?sslmode=disable' \
+  go test -tags integration ./internal/store/   # from services/pipeline
 ```
 
 ## Stack
 
 Go (webhook gateway, event spine, evidence builder, mandate ledger, executor
 and its PayPal Disputes client), Python (AI service), Kafka via Redpanda,
-PostgreSQL, Next.js, Bryntum Scheduler, Docker Compose. Render for hosting —
+PostgreSQL, Next.js (with a dependency-free deadline board), Docker Compose. Render for hosting —
 the Blueprint is [`render.yaml`](render.yaml), deploy notes in
 [docs/deploy.md](docs/deploy.md).
 
